@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from linkedbuddy.config import Settings, get_settings
+from linkedbuddy.http import make_http_client
 
 
 class HealthResponse(BaseModel):
@@ -15,8 +16,12 @@ class HealthResponse(BaseModel):
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # Shared resources (DB engine, httpx client, Gemini client) are created here in later tasks.
-    yield
+    # DB engine and Gemini client are added here in later tasks.
+    app.state.http = make_http_client()
+    try:
+        yield
+    finally:
+        await app.state.http.aclose()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

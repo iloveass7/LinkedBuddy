@@ -16,6 +16,7 @@ from linkedbuddy.auth import router as auth_router
 from linkedbuddy.config import Settings, get_settings
 from linkedbuddy.db.engine import get_session, make_engine, make_sessionmaker
 from linkedbuddy.http import make_http_client
+from linkedbuddy.inbox import router as inbox_router
 from linkedbuddy.jobs import router as jobs_router
 from linkedbuddy.llm.gemini import make_llm
 from linkedbuddy.repos import router as repos_router
@@ -81,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(auth_router.router)
     api.include_router(jobs_router.router)
     api.include_router(repos_router.router)
+    api.include_router(inbox_router.router)
 
     @public.get("/health", response_model=HealthResponse)
     async def health(

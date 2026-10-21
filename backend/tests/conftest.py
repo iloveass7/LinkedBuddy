@@ -1,15 +1,16 @@
 import asyncio
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from argon2 import PasswordHasher
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, event
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -165,3 +166,19 @@ async def plain_client(settings: Settings) -> AsyncIterator[AsyncClient]:
     app = create_app(settings)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
+
+
+@pytest.fixture
+def count_queries(engine: AsyncEngine) -> Iterator[list[str]]:
+    """Every SQL statement the engine runs while the test body executes, in order.
+
+    Includes the auth session lookup and savepoint housekeeping; filter those out in the test.
+    """
+    statements: list[str] = []
+
+    def _record(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", _record)
+    yield statements
+    event.remove(engine.sync_engine, "before_cursor_execute", _record)

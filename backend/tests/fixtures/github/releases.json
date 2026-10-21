@@ -1,0 +1,5 @@
+[
+  {"tag_name": "v1.1.0", "name": "Next", "body": "notes", "draft": true, "prerelease": false, "published_at": null},
+  {"tag_name": "v1.0.0", "name": "First stable", "body": "notes", "draft": false, "prerelease": false, "published_at": "2026-06-01T00:00:00Z"},
+  {"tag_name": "v0.1.0", "name": "Preview", "body": "notes", "draft": false, "prerelease": true, "published_at": "2025-06-01T00:00:00Z"}
+]

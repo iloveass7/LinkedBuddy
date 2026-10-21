@@ -29,9 +29,14 @@ class Classified:
     meaningful: int
 
 
+def is_ignored(path: str) -> bool:
+    """Lockfiles, build output and minified bundles: not the owner's work."""
+    return _IGNORED_RE.search(path) is not None
+
+
 def classify(c: GhCommit) -> Classified:
     message = c.message
-    files = [f for f in c.files if not _IGNORED_RE.search(f.filename)]
+    files = [f for f in c.files if not is_ignored(f.filename)]
     # Notebook lines are weighted x0.1 per file; summing then flooring once is exact.
     plain = sum(f.additions + f.deletions for f in files if not f.filename.endswith(".ipynb"))
     notebook = sum(f.additions + f.deletions for f in files if f.filename.endswith(".ipynb"))

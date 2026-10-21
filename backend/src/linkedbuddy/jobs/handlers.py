@@ -8,3 +8,7 @@ idempotent and restore any user-visible status themselves on failure.
 from linkedbuddy.jobs.context import Handler
 
 HANDLERS: dict[str, Handler] = {}
+
+# Handler modules register themselves on import; importing them here (after HANDLERS exists, so
+# their own `from linkedbuddy.jobs.handlers import HANDLERS` resolves) lets the worker see them.
+import linkedbuddy.github.ingest  # noqa: E402, F401

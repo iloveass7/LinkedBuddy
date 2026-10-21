@@ -1,0 +1,4 @@
+[
+  {"id": 0, "full_name": "octo/fresh", "default_branch": "main", "private": false, "fork": false, "archived": false, "description": "new thing", "created_at": "2026-10-15T00:00:00Z", "pushed_at": "2026-10-20T00:00:00Z"},
+  {"id": 0, "full_name": "octo/old-secret", "default_branch": "trunk", "private": true, "fork": false, "archived": false, "description": null, "created_at": "2020-01-01T00:00:00Z", "pushed_at": "2026-10-01T00:00:00Z"}
+]

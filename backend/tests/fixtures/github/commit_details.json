@@ -1,0 +1,47 @@
+{
+  "3333333333333333333333333333333333333333": {
+    "sha": "3333333333333333333333333333333333333333",
+    "parents": [{"sha": "2222222222222222222222222222222222222222"}],
+    "author": {"login": "octo"},
+    "commit": {"message": "feat: add usage dashboard", "committer": {"date": "2026-10-20T12:00:00Z"}},
+    "files": [
+      {"filename": "src/dashboard.py", "additions": 120, "deletions": 0, "status": "added"},
+      {"filename": "README.md", "additions": 5, "deletions": 1, "status": "modified"}
+    ]
+  },
+  "2222222222222222222222222222222222222222": {
+    "sha": "2222222222222222222222222222222222222222",
+    "parents": [{"sha": "1111111111111111111111111111111111111111"}],
+    "author": {"login": "octo"},
+    "commit": {"message": "fix: handle empty input", "committer": {"date": "2026-10-20T11:00:00Z"}},
+    "files": [{"filename": "src/parse.py", "additions": 10, "deletions": 2, "status": "modified"}]
+  },
+  "1111111111111111111111111111111111111111": {
+    "sha": "1111111111111111111111111111111111111111",
+    "parents": [{"sha": "0000000000000000000000000000000000000000"}],
+    "author": {"login": "octo"},
+    "commit": {"message": "chore: refresh lockfile", "committer": {"date": "2026-10-20T10:00:00Z"}},
+    "files": [{"filename": "uv.lock", "additions": 400, "deletions": 300, "status": "modified"}]
+  },
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "parents": [{"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],
+    "author": {"login": "octo"},
+    "commit": {"message": "update lockfiles", "committer": {"date": "2026-10-20T09:00:00Z"}},
+    "files": [{"filename": "package-lock.json", "additions": 900, "deletions": 850, "status": "modified"}]
+  },
+  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "parents": [{"sha": "0000000000000000000000000000000000000000"}],
+    "author": {"login": "octo"},
+    "commit": {"message": "bump lock", "committer": {"date": "2026-10-20T08:00:00Z"}},
+    "files": [{"filename": "web/yarn.lock", "additions": 40, "deletions": 30, "status": "modified"}]
+  },
+  "dddddddddddddddddddddddddddddddddddddddd": {
+    "sha": "dddddddddddddddddddddddddddddddddddddddd",
+    "parents": [{"sha": "0000000000000000000000000000000000000000"}],
+    "author": {"login": "octo"},
+    "commit": {"message": "docs: tidy wording\n\nPost: yes", "committer": {"date": "2026-10-20T07:00:00Z"}},
+    "files": []
+  }
+}

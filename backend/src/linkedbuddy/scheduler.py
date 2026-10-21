@@ -1,4 +1,6 @@
-"""Scheduler: enqueue due polls, reclaim stale jobs, purge retention (DATABASE.md 8, 9).
+"""Scheduler: enqueue due polls, reclaim stale jobs, unstick events, purge retention.
+
+DATABASE.md 8, 9.
 
 `python -m linkedbuddy.scheduler` runs `tick` every 60 s.
 """
@@ -14,9 +16,11 @@ from sqlalchemy import (
     CursorResult,
     Delete,
     Interval,
+    Text,
     Update,
     case,
     delete,
+    exists,
     func,
     literal,
     or_,
@@ -28,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from linkedbuddy.config import Settings, get_settings
 from linkedbuddy.db.engine import make_engine, make_sessionmaker
 from linkedbuddy.db.models import AuthSession, Draft, Event, Job, Repo
-from linkedbuddy.enums import JobStatus, RepoMode
+from linkedbuddy.enums import EventStatus, JobStatus, RepoMode
 from linkedbuddy.jobs.context import RENDER_VIDEO
 from linkedbuddy.jobs.queue import enqueue
 
@@ -51,6 +55,7 @@ class TickReport:
     done_jobs_deleted: int = 0
     failed_jobs_deleted: int = 0
     contexts_cleared: int = 0
+    generating_reset: int = 0
 
 
 async def tick(db: AsyncSession, now: datetime, *, settings: Settings | None = None) -> TickReport:
@@ -94,6 +99,20 @@ async def tick(db: AsyncSession, now: datetime, *, settings: Settings | None = N
             report.stale_failed += 1
         else:
             report.stale_requeued += 1
+
+    # An event left `generating` with no live generate_draft job (the worker died, or a run
+    # restored a status that was itself `generating`) goes back to the inbox.
+    live_generate = exists().where(
+        Job.kind == "generate_draft",
+        Job.status.in_([JobStatus.queued, JobStatus.running]),
+        Job.payload["event_id"].astext == Event.id.cast(Text),
+    )
+    report.generating_reset = await _count(
+        db,
+        update(Event)
+        .where(Event.status == EventStatus.generating, ~live_generate)
+        .values(status=EventStatus.suggested),
+    )
 
     report.sessions_deleted = await _count(
         db, delete(AuthSession).where(AuthSession.expires_at < now)

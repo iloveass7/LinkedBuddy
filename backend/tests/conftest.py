@@ -18,6 +18,7 @@ from linkedbuddy.config import Settings
 from linkedbuddy.db.engine import get_session, make_engine, make_sessionmaker
 from linkedbuddy.db.models import Job
 from linkedbuddy.main import create_app
+from linkedbuddy.settings.service import clear_settings_cache
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 OWNER_PASSWORD = "correct horse battery staple"  # noqa: S105 - test value
@@ -71,6 +72,14 @@ def alembic_config(url: str) -> Config:
     cfg = Config(str(BACKEND_DIR / "alembic.ini"))
     cfg.attributes["url"] = url
     return cfg
+
+
+@pytest.fixture(autouse=True)
+def _fresh_settings_cache() -> Iterator[None]:
+    """The settings cache is per process; tests roll their writes back, so never share it."""
+    clear_settings_cache()
+    yield
+    clear_settings_cache()
 
 
 @pytest.fixture(scope="session")

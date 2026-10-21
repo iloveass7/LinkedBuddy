@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from linkedbuddy.auth import router as auth_router
 from linkedbuddy.config import Settings, get_settings
 from linkedbuddy.db.engine import get_session, make_engine, make_sessionmaker
+from linkedbuddy.drafts import router as drafts_router
 from linkedbuddy.http import make_http_client
 from linkedbuddy.inbox import router as inbox_router
 from linkedbuddy.jobs import router as jobs_router
@@ -22,6 +23,7 @@ from linkedbuddy.llm.gemini import make_llm
 from linkedbuddy.repos import router as repos_router
 from linkedbuddy.security.auth import LoginRateLimiter, require_owner
 from linkedbuddy.security.middleware import SecurityMiddleware
+from linkedbuddy.settings import router as settings_router
 
 
 class HealthResponse(BaseModel):
@@ -83,6 +85,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(jobs_router.router)
     api.include_router(repos_router.router)
     api.include_router(inbox_router.router)
+    api.include_router(settings_router.router)
+    api.include_router(drafts_router.router)
 
     @public.get("/health", response_model=HealthResponse)
     async def health(

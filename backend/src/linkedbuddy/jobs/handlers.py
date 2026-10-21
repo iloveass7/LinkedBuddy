@@ -11,5 +11,6 @@ HANDLERS: dict[str, Handler] = {}
 
 # Handler modules register themselves on import; importing them here (after HANDLERS exists, so
 # their own `from linkedbuddy.jobs.handlers import HANDLERS` resolves) lets the worker see them.
+import linkedbuddy.drafts.generate  # noqa: E402, F401
 import linkedbuddy.github.ingest  # noqa: E402, F401
 import linkedbuddy.triage.rate  # noqa: E402, F401

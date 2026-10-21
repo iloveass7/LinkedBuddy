@@ -221,3 +221,60 @@ async def test_scheduler_clears_old_context(db: AsyncSession, settings: Settings
     await db.refresh(recent)
     assert old.context_json is None
     assert recent.context_json == {"readme": "x"}  # its newest draft is fresh
+
+
+async def test_scheduler_resets_stuck_generating(db: AsyncSession, settings: Settings) -> None:
+    now = datetime.now(UTC)
+    repo = await _repo(db, 6, "muted", None)
+    await db.flush()
+    events = {
+        name: Event(repo_id=repo.id, type="manual", dedupe_key=f"gen:{name}", status=status)
+        for name, status in [
+            ("stuck", "generating"),
+            ("queued", "generating"),
+            ("running", "generating"),
+            ("other_job_done", "generating"),
+            ("drafted", "drafted"),
+        ]
+    }
+    db.add_all(events.values())
+    await db.flush()
+    db.add_all(
+        [
+            Job(
+                kind="generate_draft",
+                status="queued",
+                payload={"event_id": str(events["queued"].id)},
+            ),
+            Job(
+                kind="generate_draft",
+                status="running",
+                locked_at=now,
+                payload={"event_id": str(events["running"].id)},
+            ),
+            Job(
+                kind="generate_draft",
+                status="done",
+                payload={"event_id": str(events["other_job_done"].id)},
+            ),
+            Job(
+                kind="render_diagram",
+                status="queued",
+                payload={"event_id": str(events["stuck"].id)},
+            ),
+        ]
+    )
+    await db.flush()
+
+    report = await tick(db, now, settings=settings)
+
+    assert report.generating_reset == 2
+    for event in events.values():
+        await db.refresh(event)
+    assert {name: e.status for name, e in events.items()} == {
+        "stuck": "suggested",
+        "queued": "generating",
+        "running": "generating",
+        "other_job_done": "suggested",
+        "drafted": "drafted",
+    }

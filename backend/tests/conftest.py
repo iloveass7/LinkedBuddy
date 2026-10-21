@@ -1,11 +1,13 @@
 import asyncio
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from argon2 import PasswordHasher
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -15,6 +17,9 @@ from linkedbuddy.db.engine import get_session, make_engine
 from linkedbuddy.main import create_app
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+OWNER_PASSWORD = "correct horse battery staple"  # noqa: S105 - test value
+# Minimal argon2 cost so login tests stay fast; verify() reads the cost from the hash itself.
+_TEST_HASH = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1).hash(OWNER_PASSWORD)
 
 
 def _supabase_ref(url: URL) -> str | None:
@@ -103,20 +108,34 @@ def settings() -> Settings:
         app_env="dev",
         database_url="postgresql+asyncpg://user:pw@localhost:5432/test",
         app_encryption_key="fake-encryption-key",  # type: ignore[arg-type]
-        owner_password_hash="fake-hash",  # type: ignore[arg-type]
+        owner_password_hash=_TEST_HASH,  # type: ignore[arg-type]
     )
 
 
 @pytest.fixture
-async def client(settings: Settings, db: AsyncSession) -> AsyncIterator[AsyncClient]:
+def client_for(db: AsyncSession) -> Callable[[Settings], AbstractAsyncContextManager[AsyncClient]]:
+    """Factory for a client over an app built from custom settings, using the test session."""
+
+    @asynccontextmanager
+    async def _make(settings: Settings) -> AsyncIterator[AsyncClient]:
+        app = create_app(settings)
+
+        async def _session() -> AsyncIterator[AsyncSession]:
+            yield db
+
+        app.dependency_overrides[get_session] = _session
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            yield c
+
+    return _make
+
+
+@pytest.fixture
+async def client(
+    settings: Settings, client_for: Callable[[Settings], AbstractAsyncContextManager[AsyncClient]]
+) -> AsyncIterator[AsyncClient]:
     """HTTP client whose requests use the rolled-back test session."""
-    app = create_app(settings)
-
-    async def _session() -> AsyncIterator[AsyncSession]:
-        yield db
-
-    app.dependency_overrides[get_session] = _session
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+    async with client_for(settings) as c:
         yield c
 
 

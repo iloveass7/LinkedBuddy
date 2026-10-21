@@ -4,15 +4,19 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Response, status
+from fastapi import APIRouter, Depends, FastAPI, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from linkedbuddy.auth import router as auth_router
 from linkedbuddy.config import Settings, get_settings
 from linkedbuddy.db.engine import get_session, make_engine, make_sessionmaker
 from linkedbuddy.http import make_http_client
 from linkedbuddy.llm.gemini import make_llm
+from linkedbuddy.security.auth import LoginRateLimiter, require_owner
+from linkedbuddy.security.middleware import SecurityMiddleware
 
 
 class HealthResponse(BaseModel):
@@ -44,8 +48,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if dev else None,
     )
     app.state.settings = settings
+    app.state.login_limiter = LoginRateLimiter()
 
-    @app.get("/api/health", response_model=HealthResponse)
+    # Added last = outermost: CORS answers preflights, then the CSRF check and headers wrap the app.
+    app.add_middleware(SecurityMiddleware, hsts=not dev)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.frontend_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        allow_headers=["Content-Type", "X-Requested-With"],
+    )
+
+    public = APIRouter(prefix="/api")  # health and login only (see PUBLIC_ROUTES)
+    api = APIRouter(prefix="/api", dependencies=[Depends(require_owner)])  # every other router
+    public.include_router(auth_router.public_router)
+    api.include_router(auth_router.router)
+
+    @public.get("/health", response_model=HealthResponse)
     async def health(
         response: Response, session: Annotated[AsyncSession, Depends(get_session)]
     ) -> HealthResponse:
@@ -56,6 +76,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return HealthResponse(status="degraded", db="error")
         return HealthResponse(status="ok", db="ok")
 
+    app.include_router(public)
+    app.include_router(api)
     return app
 
 

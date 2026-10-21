@@ -30,7 +30,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from linkedbuddy.config import Settings, get_settings
-from linkedbuddy.db.engine import make_engine, make_sessionmaker
+from linkedbuddy.db.engine import engine_for, make_sessionmaker
 from linkedbuddy.db.models import AuthSession, Draft, Event, Job, Media, Repo
 from linkedbuddy.enums import EventStatus, JobStatus, MediaStatus, MediaType, RepoMode
 from linkedbuddy.jobs.context import RENDER_VIDEO
@@ -177,7 +177,7 @@ async def _count(db: AsyncSession, stmt: Delete | Update) -> int:
 
 async def run_scheduler(stop: asyncio.Event) -> None:
     settings = get_settings()
-    engine = make_engine(settings.database_url)
+    engine = engine_for(settings)
     sm = make_sessionmaker(engine)
     try:
         while not stop.is_set():

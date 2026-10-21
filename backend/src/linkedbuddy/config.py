@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     brag_command: list[str] | None = None
     video_timeout_s: int = 600
     allow_public_bind: bool = False
+    # Dev only: log statements slower than this. It includes the network round trip, so a remote
+    # Supabase may need a higher value.
+    slow_query_ms: int = 100
 
     @property
     def media_dir(self) -> Path:

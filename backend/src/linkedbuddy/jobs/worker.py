@@ -14,7 +14,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from linkedbuddy.config import Settings, get_settings
-from linkedbuddy.db.engine import make_engine, make_sessionmaker
+from linkedbuddy.db.engine import engine_for, make_sessionmaker
 from linkedbuddy.db.models import Job
 from linkedbuddy.http import make_http_client
 from linkedbuddy.jobs.context import JobContext
@@ -39,7 +39,7 @@ async def run_worker(
 ) -> None:
     """Run jobs of `kinds` until `stop` is set, then drain in-flight jobs (30 s at most)."""
     settings = settings or get_settings()
-    engine = make_engine(settings.database_url)
+    engine = engine_for(settings)
     http = make_http_client()
     ctx = JobContext(make_sessionmaker(engine), http, make_llm(settings), settings)
     wake = asyncio.Event()

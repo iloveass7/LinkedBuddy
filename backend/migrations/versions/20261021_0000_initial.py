@@ -163,7 +163,7 @@ def upgrade() -> None:
         sa.Column("head_sha", sa.Text(), nullable=True),
         sa.Column("dedupe_key", sa.Text(), nullable=False),
         _jsonb("stats", "{}"),
-        sa.Column("heuristic_score", sa.Float(), server_default=sa.text("0"), nullable=False),
+        sa.Column("heuristic_score", sa.REAL(), server_default=sa.text("0"), nullable=False),
         sa.Column("rating", sa.Text(), nullable=True),
         sa.Column("rating_reason", sa.Text(), nullable=True),
         _jsonb("rating_json", None, nullable=True),
@@ -312,7 +312,9 @@ def upgrade() -> None:
         sa.Column("covered_head_sha", sa.Text(), nullable=True),
         _jsonb("metrics", "{}"),
         sa.PrimaryKeyConstraint("id", name="pk_posts"),
-        sa.ForeignKeyConstraint(["draft_id"], ["drafts.id"], name="fk_posts_draft_id_drafts"),
+        sa.ForeignKeyConstraint(
+            ["draft_id"], ["drafts.id"], name="fk_posts_draft_id_drafts", ondelete="CASCADE"
+        ),
         sa.CheckConstraint(_in("publish_method", "manual", "api"), name="ck_posts_publish_method"),
     )
     op.create_index("ix_posts_draft_id", "posts", ["draft_id"])
@@ -323,7 +325,7 @@ def upgrade() -> None:
         sa.Column("event_id", pg.UUID(as_uuid=True), nullable=False),
         sa.Column("action", sa.Text(), nullable=False),
         sa.Column("rating_at_time", sa.Text(), nullable=True),
-        sa.Column("heuristic_at_time", sa.Float(), nullable=True),
+        sa.Column("heuristic_at_time", sa.REAL(), nullable=True),
         _ts("decided_at"),
         sa.PrimaryKeyConstraint("id", name="pk_decisions"),
         sa.ForeignKeyConstraint(

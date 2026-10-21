@@ -1,4 +1,5 @@
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -6,7 +7,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from linkedbuddy.config import Settings
@@ -14,6 +15,15 @@ from linkedbuddy.db.engine import get_session, make_engine
 from linkedbuddy.main import create_app
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+
+
+def _supabase_ref(url: URL) -> str | None:
+    """Supabase project ref: pooler user `postgres.<ref>` or direct host `db.<ref>.supabase.co`."""
+    if url.username and (m := re.fullmatch(r"postgres\.([a-z0-9]+)", url.username)):
+        return m.group(1)
+    if url.host and (m := re.fullmatch(r"db\.([a-z0-9]+)\.supabase\.co", url.host)):
+        return m.group(1)
+    return None
 
 
 def check_test_db_url(test_url: str | None, real_url: str | None) -> None:
@@ -26,12 +36,19 @@ def check_test_db_url(test_url: str | None, real_url: str | None) -> None:
     test = make_url(test_url)
     if test.port == 6543:
         raise RuntimeError("TEST_DATABASE_URL uses port 6543 (transaction pooler); use 5432")
-    if real_url:
-        real = make_url(real_url)
-        # The username matters: Supabase poolers share a host and encode the project in it.
-        keys = ("host", "port", "database", "username")
-        if all(getattr(test, k) == getattr(real, k) for k in keys):
-            raise RuntimeError("TEST_DATABASE_URL equals DATABASE_URL; tests wipe the database")
+    if not real_url:
+        return
+    real = make_url(real_url)
+    test_ref, real_ref = _supabase_ref(test), _supabase_ref(real)
+    if test_ref or real_ref:
+        # Poolers share a host across projects and the direct host reaches the same project, so
+        # when either URL names a Supabase project only the refs decide. A URL without a ref
+        # (e.g. a placeholder on the shared pooler host) cannot be that project.
+        same = test_ref == real_ref
+    else:
+        same = (test.host, test.port, test.database) == (real.host, real.port, real.database)
+    if same:
+        raise RuntimeError("TEST_DATABASE_URL points at DATABASE_URL; tests wipe the database")
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:

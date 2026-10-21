@@ -9,11 +9,11 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    REAL,
     BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
-    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -220,7 +220,7 @@ class Event(Base):
     head_sha: Mapped[str | None] = mapped_column(Text)
     dedupe_key: Mapped[str] = mapped_column(Text)
     stats: Mapped[dict[str, Any]] = _jsonb("{}")
-    heuristic_score: Mapped[float] = mapped_column(Float, server_default=text("0"))
+    heuristic_score: Mapped[float] = mapped_column(REAL, server_default=text("0"))
     rating: Mapped[str | None] = mapped_column(Text)
     rating_reason: Mapped[str | None] = mapped_column(Text)
     rating_json: Mapped[dict[str, Any] | None] = _jsonb("{}", nullable=True)
@@ -316,7 +316,9 @@ class Draft(Base):
     media: Mapped[list["Media"]] = relationship(
         back_populates="draft", lazy="raise", passive_deletes=True
     )
-    posts: Mapped[list["Post"]] = relationship(back_populates="draft", lazy="raise")
+    posts: Mapped[list["Post"]] = relationship(
+        back_populates="draft", lazy="raise", passive_deletes=True
+    )
 
 
 class Media(Base):
@@ -352,7 +354,7 @@ class Post(Base):
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    draft_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("drafts.id"))
+    draft_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("drafts.id", ondelete="CASCADE"))
     posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     publish_method: Mapped[str] = mapped_column(Text)
     linkedin_post_urn: Mapped[str | None] = mapped_column(Text)
@@ -375,7 +377,7 @@ class Decision(Base):
     event_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
     action: Mapped[str] = mapped_column(Text)
     rating_at_time: Mapped[str | None] = mapped_column(Text)
-    heuristic_at_time: Mapped[float | None] = mapped_column(Float)
+    heuristic_at_time: Mapped[float | None] = mapped_column(REAL)
     decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     event: Mapped[Event] = relationship(back_populates="decisions", lazy="raise")

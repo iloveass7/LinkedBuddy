@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 from alembic import command
-from sqlalchemy import text
+from sqlalchemy import delete, func, text
 from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import selectinload
@@ -10,7 +10,7 @@ from sqlalchemy.sql import select
 
 from conftest import alembic_config, check_test_db_url
 from linkedbuddy.db.engine import make_engine
-from linkedbuddy.db.models import Base, Event, Job, Repo, SettingsRow
+from linkedbuddy.db.models import Base, Draft, Event, Job, Post, Repo, SettingsRow
 
 
 async def _repo(db: AsyncSession) -> Repo:
@@ -53,6 +53,22 @@ async def test_job_dedupe_partial_unique(db: AsyncSession) -> None:
         await db.flush()
 
 
+async def test_repo_delete_cascades_to_posts(db: AsyncSession) -> None:
+    repo = await _repo(db)
+    event = Event(repo_id=repo.id, type="manual", dedupe_key="k-cascade")
+    db.add(event)
+    await db.flush()
+    draft = Draft(event_id=event.id, tone="professional", body="b", model="m", prompt_version="1")
+    db.add(draft)
+    await db.flush()
+    db.add(Post(draft_id=draft.id, publish_method="manual", final_text="t"))
+    await db.flush()
+    assert await db.scalar(select(func.count()).select_from(Post)) == 1
+    await db.execute(delete(Repo).where(Repo.id == repo.id))
+    assert await db.scalar(select(func.count()).select_from(Post)) == 0
+    assert await db.scalar(select(func.count()).select_from(Draft)) == 0
+
+
 async def test_lazy_raise(db: AsyncSession) -> None:
     repo = await _repo(db)
     db.add(Event(repo_id=repo.id, type="manual", dedupe_key="k2"))
@@ -66,11 +82,11 @@ async def test_lazy_raise(db: AsyncSession) -> None:
 
 
 async def test_public_api_locked_down(db: AsyncSession) -> None:
-    roles = [
-        r
-        for r in ("anon", "authenticated")
-        if (await db.scalar(text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": r}))
-    ]
+    roles = ["anon", "authenticated"]
+    for role in roles:  # a missing role would make the privilege checks below vacuous
+        assert await db.scalar(text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": role}), (
+            f"role {role} must exist on the (Supabase) test DB"
+        )
     rows = (
         await db.execute(
             text(
@@ -105,16 +121,73 @@ async def test_public_api_locked_down(db: AsyncSession) -> None:
     assert leaked == 0
 
 
-def test_conftest_guard() -> None:
-    real = "postgresql+asyncpg://u:p@db.example.com:5432/postgres"
-    test = "postgresql+asyncpg://u:p@test.example.com:5432/postgres"
-    check_test_db_url(test, real)
-    with pytest.raises(RuntimeError):
-        check_test_db_url(None, real)
-    with pytest.raises(RuntimeError):
-        check_test_db_url(real, real)
-    with pytest.raises(RuntimeError):
-        check_test_db_url("postgresql+asyncpg://u:p@test.example.com:6543/postgres", real)
+POOLER = "aws-0-ap-northeast-1.pooler.supabase.com"
+
+
+@pytest.mark.parametrize(
+    ("test_url", "real_url"),
+    [
+        # same pooler host, different project refs: fine
+        (
+            f"postgresql+asyncpg://postgres.aaaa:p@{POOLER}:5432/postgres",
+            f"postgresql+asyncpg://postgres.bbbb:p@{POOLER}:5432/postgres",
+        ),
+        # Supabase test URL vs a placeholder real URL on the same shared pooler host: fine
+        (
+            f"postgresql+asyncpg://postgres.aaaa:p@{POOLER}:5432/postgres",
+            f"postgresql+asyncpg://postgres:p@{POOLER}:5432/postgres",
+        ),
+        # plain Postgres on different hosts: fine
+        (
+            "postgresql+asyncpg://u:p@test.example.com:5432/d",
+            "postgresql+asyncpg://u:p@db.example.com:5432/d",
+        ),
+    ],
+)
+def test_conftest_guard_accepts_separate_databases(test_url: str, real_url: str) -> None:
+    check_test_db_url(test_url, real_url)
+
+
+@pytest.mark.parametrize(
+    ("test_url", "real_url"),
+    [
+        (None, "postgresql+asyncpg://u:p@db.example.com:5432/d"),
+        ("", "postgresql+asyncpg://u:p@db.example.com:5432/d"),
+        # identical
+        (
+            "postgresql+asyncpg://u:p@db.example.com:5432/d",
+            "postgresql+asyncpg://u:p@db.example.com:5432/d",
+        ),
+        # same Supabase ref via the same pooler
+        (
+            f"postgresql+asyncpg://postgres.aaaa:p@{POOLER}:5432/postgres",
+            f"postgresql+asyncpg://postgres.aaaa:q@{POOLER}:5432/postgres",
+        ),
+        # same Supabase ref via pooler and via the direct host
+        (
+            f"postgresql+asyncpg://postgres.aaaa:p@{POOLER}:5432/postgres",
+            "postgresql+asyncpg://postgres:p@db.aaaa.supabase.co:5432/postgres",
+        ),
+        (
+            "postgresql+asyncpg://postgres:p@db.aaaa.supabase.co:5432/postgres",
+            f"postgresql+asyncpg://postgres.aaaa:p@{POOLER}:5432/postgres",
+        ),
+        # plain Postgres: same host/port/db with a different role is still the same database
+        (
+            "postgresql+asyncpg://tester:p@db.example.com:5432/d",
+            "postgresql+asyncpg://owner:p@db.example.com:5432/d",
+        ),
+        # transaction pooler
+        (
+            f"postgresql+asyncpg://postgres.aaaa:p@{POOLER}:6543/postgres",
+            f"postgresql+asyncpg://postgres.bbbb:p@{POOLER}:5432/postgres",
+        ),
+    ],
+)
+def test_conftest_guard_rejects(test_url: str | None, real_url: str) -> None:
+    with pytest.raises(RuntimeError) as exc:
+        check_test_db_url(test_url, real_url)
+    assert "@" not in str(exc.value)  # never leaks a URL
 
 
 def test_make_engine_rejects_transaction_pooler() -> None:

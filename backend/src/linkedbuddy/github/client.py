@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 BASE_URL = "https://api.github.com"
 LOW_REMAINING = 100
@@ -54,6 +54,8 @@ class GhFile(_Frozen):
     additions: int = 0
     deletions: int = 0
     status: str = "modified"
+    # Diff text: held in memory for the context builder only, never dumped (SECURITY.md 6.9).
+    patch: str | None = Field(default=None, exclude=True)
 
 
 class GhCommit(_Frozen):
@@ -189,9 +191,10 @@ class GitHubClient:
             return None
         return [c["sha"] for c in resp.json().get("commits", [])]
 
-    async def get_readme(self, full_name: str) -> str | None:
+    async def get_readme(self, full_name: str, ref: str | None = None) -> str | None:
         resp = await self._get(
             f"{BASE_URL}/repos/{_repo(full_name)}/readme",
+            {"ref": _sha(ref)} if ref else None,
             headers={"Accept": "application/vnd.github.raw+json"},
             ok_statuses=(404,),
         )

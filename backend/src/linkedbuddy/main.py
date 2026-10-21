@@ -21,6 +21,7 @@ from linkedbuddy.inbox import router as inbox_router
 from linkedbuddy.jobs import router as jobs_router
 from linkedbuddy.llm.gemini import make_llm
 from linkedbuddy.media import router as media_router
+from linkedbuddy.posts import router as posts_router
 from linkedbuddy.repos import router as repos_router
 from linkedbuddy.security.auth import LoginRateLimiter, require_owner
 from linkedbuddy.security.middleware import SecurityMiddleware
@@ -91,6 +92,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(drafts_router.router)
     api.include_router(media_router.router)
     api.include_router(video_router.router)
+    api.include_router(posts_router.router)
 
     @public.get("/health", response_model=HealthResponse)
     async def health(

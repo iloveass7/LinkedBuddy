@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from linkedbuddy.config import Settings, get_settings
 from linkedbuddy.http import make_http_client
+from linkedbuddy.llm.gemini import make_llm
 
 
 class HealthResponse(BaseModel):
@@ -16,8 +17,9 @@ class HealthResponse(BaseModel):
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # DB engine and Gemini client are added here in later tasks.
+    # The DB engine is added here in a later task.
     app.state.http = make_http_client()
+    app.state.llm = make_llm(app.state.settings)
     try:
         yield
     finally:

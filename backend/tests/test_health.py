@@ -7,11 +7,11 @@ from linkedbuddy.main import create_app
 async def test_health_ok(client: AsyncClient) -> None:
     resp = await client.get("/api/health")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "ok"
+    assert resp.json() == {"status": "ok", "db": "ok"}
 
 
-async def test_docs_enabled_in_dev(client: AsyncClient) -> None:
-    assert (await client.get("/docs")).status_code == 200
+async def test_docs_enabled_in_dev(plain_client: AsyncClient) -> None:
+    assert (await plain_client.get("/docs")).status_code == 200
 
 
 async def test_docs_disabled_in_prod(settings: Settings) -> None:

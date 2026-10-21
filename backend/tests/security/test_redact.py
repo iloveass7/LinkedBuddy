@@ -56,3 +56,26 @@ def test_env_secret_multiline_and_quotes() -> None:
 
 def test_redaction_blocked_is_exception() -> None:
     assert issubclass(RedactionBlocked, Exception)
+
+
+def test_truncated_private_key_redacted_to_end() -> None:
+    result = redact("head\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg\nabc")
+    assert result.text == "head\n[REDACTED:private_key]"
+    assert result.kinds == ["private_key"]
+
+
+def test_pgp_private_key_block_redacted() -> None:
+    pgp = "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQdGBF\n-----END PGP PRIVATE KEY BLOCK-----"
+    result = redact(f"a {pgp} b")
+    assert result.text == "a [REDACTED:private_key] b"
+
+
+def test_truncated_pgp_private_key_block_redacted() -> None:
+    result = redact("-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQdGBF")
+    assert result.text == "[REDACTED:private_key]"
+
+
+def test_double_equals_comparison_does_not_leak_value() -> None:
+    result = redact('if password == "hunter2":')
+    assert "hunter2" not in result.text
+    assert result.kinds == ["env_secret"]

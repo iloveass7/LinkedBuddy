@@ -21,7 +21,12 @@ _ENV_KEY = r"[A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY)[A-Za-z0-9_]*"
 _RULES: list[tuple[str, re.Pattern[str]]] = [
     (
         "private_key",
-        re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S),
+        # No END line (e.g. truncated at the context budget): redact to end of string.
+        re.compile(
+            r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----"
+            r"(?:.*?-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|.*\Z)",
+            re.S,
+        ),
     ),
     (
         "github_token",
@@ -37,8 +42,8 @@ _RULES: list[tuple[str, re.Pattern[str]]] = [
     (
         "env_secret",
         re.compile(
-            rf"(?<![A-Za-z0-9_]){_ENV_KEY}[ \t]*=[ \t]*"
-            r"(?!\[REDACTED:)(?:\"[^\"\n]*\"|'[^'\n]*'|\S+)",
+            rf"(?<![A-Za-z0-9_]){_ENV_KEY}[ \t]*={{1,2}}[ \t]*"
+            r"(?!\[REDACTED:)(?:\"[^\"\n]*\"|'[^'\n]*'|[^\s=]\S*)",
             re.I,
         ),
     ),

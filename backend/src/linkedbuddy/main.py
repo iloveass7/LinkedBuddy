@@ -14,6 +14,7 @@ from linkedbuddy.auth import router as auth_router
 from linkedbuddy.config import Settings, get_settings
 from linkedbuddy.db.engine import get_session, make_engine, make_sessionmaker
 from linkedbuddy.http import make_http_client
+from linkedbuddy.jobs import router as jobs_router
 from linkedbuddy.llm.gemini import make_llm
 from linkedbuddy.security.auth import LoginRateLimiter, require_owner
 from linkedbuddy.security.middleware import SecurityMiddleware
@@ -64,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api = APIRouter(prefix="/api", dependencies=[Depends(require_owner)])  # every other router
     public.include_router(auth_router.public_router)
     api.include_router(auth_router.router)
+    api.include_router(jobs_router.router)
 
     @public.get("/health", response_model=HealthResponse)
     async def health(

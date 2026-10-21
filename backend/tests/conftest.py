@@ -9,11 +9,13 @@ from alembic import command
 from alembic.config import Config
 from argon2 import PasswordHasher
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from linkedbuddy.config import Settings
-from linkedbuddy.db.engine import get_session, make_engine
+from linkedbuddy.db.engine import get_session, make_engine, make_sessionmaker
+from linkedbuddy.db.models import Job
 from linkedbuddy.main import create_app
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -99,6 +101,24 @@ async def db(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         finally:
             await session.close()
             await outer.rollback()
+
+
+async def _wipe_jobs(maker: async_sessionmaker[AsyncSession]) -> None:
+    async with maker() as s:
+        await s.execute(delete(Job))
+        await s.commit()
+
+
+@pytest.fixture
+async def committed(engine: AsyncEngine) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """Sessions that really commit, for the job queue (SKIP LOCKED needs concurrent transactions).
+
+    Rows are visible to every test, so the jobs table is wiped before and after.
+    """
+    maker = make_sessionmaker(engine)
+    await _wipe_jobs(maker)
+    yield maker
+    await _wipe_jobs(maker)
 
 
 @pytest.fixture

@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import re
+import unicodedata
 import uuid
 from collections.abc import Iterable, Sequence
 from typing import Any, Literal
@@ -57,7 +58,11 @@ SUMMARY_ENTRY_CHARS = 300
 
 EvidenceKind = Literal["readme", "commit", "file", "release", "prev_post", "repo"]
 
-_DELIMITER_RE = re.compile(r"</?repo_context>", re.IGNORECASE)
+# Any spelling of the tag a model might honour: spaces, an escaped slash, attributes. Fullwidth
+# and other compatibility forms are folded to ASCII by NFKC first.
+_DELIMITER_RE = re.compile(r"<\s*\\?/?\s*repo_context\b[^>]*>", re.IGNORECASE)
+# Redaction kinds that block a private repo. Emails are still redacted but do not block.
+_NON_BLOCKING_KINDS = frozenset({"email"})
 _KEY_END_RE = re.compile(r"-----END [A-Z ]*PRIVATE KEY")
 
 
@@ -68,7 +73,8 @@ class Evidence(BaseModel):
 
 
 def _strip_delimiters(text: str) -> str:
-    """Remove delimiter tags until none remain (``<repo_<repo_context>context>`` included)."""
+    """NFKC-normalise, then remove delimiter tags until none remain (nested ones included)."""
+    text = unicodedata.normalize("NFKC", text)
     while True:
         cleaned = _DELIMITER_RE.sub("", text)
         if cleaned == text:
@@ -82,7 +88,8 @@ def _entry(e: Evidence) -> str:
 
 
 def _tree_line(path: str) -> str:
-    return " ".join(_strip_delimiters(path).splitlines())
+    # Indented like continuation lines: a path such as "[readme:L1] ..." cannot pose as evidence.
+    return "  " + " ".join(_strip_delimiters(path).splitlines())
 
 
 class ContextPackage(BaseModel):
@@ -111,13 +118,13 @@ def context_hash(head_sha: str | None, privacy_mode: PrivacyMode) -> str:
 
 
 class _Redactor:
-    """Redacts each string and remembers which kinds fired."""
+    """Strips delimiters, redacts each string and remembers which kinds fired."""
 
     def __init__(self) -> None:
         self.fired: set[str] = set()
 
     def __call__(self, text: str) -> str:
-        result = redact(text)
+        result = redact(_strip_delimiters(text))
         self.fired.update(result.kinds)
         return result.text
 
@@ -134,7 +141,7 @@ def _readme_evidence(readme: str, clean: _Redactor) -> list[Evidence]:
             continue
         if not raw.strip():
             continue
-        result = redact(raw)
+        result = redact(_strip_delimiters(raw))
         clean.fired.update(result.kinds)
         # A BEGIN line without its END: redact() blanked this line; skip the key body below.
         in_key = "private_key" in result.kinds and not _KEY_END_RE.search(raw)
@@ -356,13 +363,15 @@ async def build_context(
 
     clean = _Redactor()
     stats = row.stats or {}
-    meta = (
+    # Redact before cutting: a cut through a secret would leave a fragment redact() misses.
+    stats_text = clean(json.dumps(stats, sort_keys=True, default=str))[:MAX_STATS_CHARS]
+    meta = clean(
         f"repository: {row.full_name}\nvisibility: {row.visibility}\n"
         f"default branch: {row.default_branch}\nevent: {row.type}\n"
-        f"stats: {json.dumps(stats, sort_keys=True, default=str)[:MAX_STATS_CHARS]}"
     )
-    evidence = [Evidence(id="repo:meta", kind="repo", text=clean(meta))]
-    previous_post = clean(prev_post)[:MAX_PREV_POST_CHARS] if prev_post else None
+    evidence = [Evidence(id="repo:meta", kind="repo", text=f"{meta}stats: {stats_text}")]
+    # The owner's own post: redacted, but what fires there never blocks the repo.
+    previous_post = _Redactor()(prev_post)[:MAX_PREV_POST_CHARS] if prev_post else None
     if previous_post:
         evidence.append(Evidence(id="prev_post", kind="prev_post", text=previous_post))
     event_tag = stats.get("tag") if isinstance(stats.get("tag"), str) else None
@@ -373,7 +382,7 @@ async def build_context(
     evidence += _patch_evidence(patch_commits, clean)
     file_tree = [clean(p) for p in tree[:MAX_TREE_PATHS]]
 
-    if clean.fired and row.visibility == RepoVisibility.private:
+    if clean.fired - _NON_BLOCKING_KINDS and row.visibility == RepoVisibility.private:
         raise RedactionBlocked("secret_in_private_repo")
 
     pkg = _fit(

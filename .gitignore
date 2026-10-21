@@ -1,0 +1,27 @@
+# Secrets: never commit env files
+.env*
+!.env.example
+
+# Python venv (webapp-testing deps)
+.venv/
+
+# Claude Code local-only settings
+.claude/settings.local.json
+
+# Next.js / Node
+node_modules/
+.next/
+out/
+
+# Playwright MCP snapshots/screenshots
+.playwright-mcp/
+
+# Python / tooling
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+backend/var/
+
+# SDD workspaces
+.superpowers/

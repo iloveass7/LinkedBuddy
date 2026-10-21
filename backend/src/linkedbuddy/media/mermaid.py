@@ -13,7 +13,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -31,9 +30,9 @@ from linkedbuddy.jobs.context import JobContext
 from linkedbuddy.jobs.handlers import HANDLERS
 from linkedbuddy.jobs.queue import Defer
 from linkedbuddy.media.storage import media_path, new_media_name
+from linkedbuddy.media.subproc import minimal_env, reap
 
 RENDER_TIMEOUT_S = 30.0
-TERM_GRACE_S = 2.5  # SIGTERM first: Puppeteer closes its browser when mmdc is terminated
 RENDER_WIDTH_PX = 1600
 MMDC_CONFIG = Path(__file__).resolve().parents[3] / "mermaid-config.json"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -113,13 +112,9 @@ def check_mermaid(src: str, tree: list[str]) -> MermaidCheck:
 
 
 def _subprocess_env(work: Path) -> dict[str, str]:
-    """No secrets: only what node and the browser need. TMPDIR is the render's own directory, so
-    the browser profile lives there too and the reaper can find every process of this render."""
-    env = {
-        "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", tempfile.gettempdir()),
-        "TMPDIR": str(work),
-    }
+    """Only what node and the browser need. TMPDIR is the render's own directory, so the browser
+    profile lives there too and the reaper can find every process of this render."""
+    env = minimal_env(work)
     env.update({k: v for k, v in os.environ.items() if k.startswith("PUPPETEER_")})
     return env
 
@@ -144,95 +139,6 @@ def _write_puppeteer_config(settings: Settings, work: Path) -> Path:
     path = work / "puppeteer.json"
     path.write_text(json.dumps(config), encoding="utf-8")
     return path
-
-
-def _children(pid: int) -> list[int]:
-    found: list[int] = []
-    try:
-        threads = os.listdir(f"/proc/{pid}/task")
-    except OSError:
-        return found
-    for tid in threads:
-        try:
-            with open(f"/proc/{pid}/task/{tid}/children", encoding="ascii") as f:
-                found += [int(p) for p in f.read().split()]
-        except (OSError, ValueError):
-            continue
-    return found
-
-
-def _descendants(pid: int) -> list[int]:
-    """Every process below `pid`, found through /proc (Linux)."""
-    seen: list[int] = []
-    stack = [pid]
-    while stack:
-        for child in _children(stack.pop()):
-            if child not in seen:
-                seen.append(child)
-                stack.append(child)
-    return seen
-
-
-def _pids_mentioning(needle: bytes) -> list[int]:
-    """Processes whose command line contains `needle` (this render's private directory)."""
-    me = os.getpid()
-    found: list[int] = []
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return found
-    for entry in entries:
-        if not entry.isdigit() or int(entry) == me:
-            continue
-        try:
-            with open(f"/proc/{entry}/cmdline", "rb") as f:
-                if needle in f.read():
-                    found.append(int(entry))
-        except OSError:
-            continue
-    return found
-
-
-def _sigkill(pids: list[int]) -> None:
-    own_group = os.getpgrp()
-    for pid in pids:
-        try:
-            group = os.getpgid(pid)
-            if group != own_group:
-                os.killpg(group, signal.SIGKILL)
-        except OSError:
-            pass
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
-
-
-def _signal_group(pid: int, sig: signal.Signals) -> None:
-    try:
-        os.killpg(pid, sig)
-    except OSError:
-        pass
-
-
-async def _reap(proc: asyncio.subprocess.Process, work: Path) -> None:
-    """Leave nothing of this render running, on every exit path. Puppeteer starts the browser
-    detached (its own process group), so killing mmdc's group is not enough: the descendants are
-    collected before mmdc is stopped (afterwards they are re-parented), and anything still
-    carrying the render's private directory on its command line is killed too."""
-    descendants: list[int] = []
-    if proc.returncode is None:
-        descendants = await asyncio.to_thread(_descendants, proc.pid)
-        _signal_group(proc.pid, signal.SIGTERM)
-        try:
-            await asyncio.wait_for(proc.wait(), TERM_GRACE_S)
-        except TimeoutError:
-            pass
-    leftovers = await asyncio.to_thread(_pids_mentioning, str(work).encode())
-    await asyncio.to_thread(_sigkill, [*descendants, *leftovers])
-    _signal_group(proc.pid, signal.SIGKILL)
-    if proc.returncode is None:
-        await proc.wait()
 
 
 async def render_mermaid(src: str, out: Path, settings: Settings | None = None) -> None:
@@ -284,7 +190,7 @@ async def render_mermaid(src: str, out: Path, settings: Settings | None = None) 
         raise
     finally:
         if proc is not None:
-            await _reap(proc, work)
+            await reap(proc, work)
         shutil.rmtree(work, ignore_errors=True)
 
 

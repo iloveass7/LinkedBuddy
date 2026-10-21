@@ -23,6 +23,8 @@ from linkedbuddy.jobs.queue import enqueue
 from linkedbuddy.security.crypto import encrypt
 from linkedbuddy.triage.score import EventSignals, heuristic_score
 
+MAX_LISTED_REPOS = 500  # single owner: unpaginated, but bounded
+
 
 class PrivateRepoNeedsAck(Exception):
     """Turning the LLM on for a private repo needs `acknowledge_free_tier_data_use`.
@@ -63,7 +65,9 @@ async def list_repos(db: AsyncSession) -> Sequence[Any]:
             Repo.never_send_to_llm,
             Repo.demo_url,
             Repo.last_polled_at,
-        ).order_by(Repo.full_name, Repo.id)
+        )
+        .order_by(Repo.full_name, Repo.id)
+        .limit(MAX_LISTED_REPOS)
     )
     return result.all()
 

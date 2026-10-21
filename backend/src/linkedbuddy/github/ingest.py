@@ -31,7 +31,6 @@ from linkedbuddy.enums import (
 from linkedbuddy.github.classify import Classified, classify, is_ignored
 from linkedbuddy.github.client import (
     GhCommit,
-    GhCommitRef,
     GhRelease,
     GitHubClient,
     GitHubRateLimited,
@@ -205,21 +204,25 @@ class _RepoSnapshot:
     never_send_to_llm: bool
     etag: str | None
     last_seen_sha: str | None
-    since: datetime | None  # last_polled_at before this poll
     created_at: datetime
     polled_at: datetime  # this poll's start (DB time)
     record_head_only: bool  # first poll of a repo that was not new when synced
+    known_releases: frozenset[str]  # tags that already have an event
 
 
 @dataclass(frozen=True, slots=True)
 class _Fetched:
+    not_modified: bool
     etag: str | None
-    head: str | None
+    head: str | None  # new branch tip, None when unchanged
     base_sha: str | None
     commits: list[tuple[GhCommit, Classified]]
     dates: dict[str, datetime | None]  # list-endpoint dates, a fallback for missing ones
     truncated: bool
-    releases: list[GhRelease]
+    releases: list[GhRelease]  # new ones only
+
+    def changes(self, snap: _RepoSnapshot) -> bool:
+        return bool(self.commits or self.releases or self.head or self.etag != snap.etag)
 
 
 async def poll_repo(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
@@ -234,17 +237,21 @@ async def poll_repo(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
         fetched = await _fetch(gh, snap)
     except GitHubRateLimited as exc:
         raise Defer(exc.reset_at) from exc
-    if fetched is None:
-        return {"not_modified": True}  # last_polled_at was already set by _start
-    async with ctx.sessionmaker() as db:
-        created = await _write(db, snap, fetched)
-        await db.commit()
-    return {"commits": len(fetched.commits), "events_created": created}
+    created = 0
+    if fetched.changes(snap):  # a 304 with no new release writes nothing more
+        async with ctx.sessionmaker() as db:
+            created = await _write(db, snap, fetched)
+            await db.commit()
+    return {
+        "not_modified": fetched.not_modified,
+        "commits": len(fetched.commits),
+        "events_created": created,
+    }
 
 
 async def _start(db: AsyncSession, repo_id: uuid.UUID) -> _RepoSnapshot | None:
     """Read the repo and stamp last_polled_at before any GitHub call, so a repo that keeps
-    failing is not re-enqueued on every scheduler tick. Commits."""
+    failing is not re-enqueued on every scheduler tick (scheduling only). Commits."""
     repo = await db.get(Repo, repo_id)
     if repo is None:
         return None
@@ -254,7 +261,11 @@ async def _start(db: AsyncSession, repo_id: uuid.UUID) -> _RepoSnapshot | None:
             select(Event.id).where(Event.dedupe_key == f"new_repo:{repo.github_repo_id}")
         )
         record_head_only = new_repo_event is None
-    since = repo.last_polled_at
+    release_prefix = f"release:{repo.id}:"
+    release_keys = await db.scalars(
+        select(Event.dedupe_key).where(Event.repo_id == repo.id, Event.type == EventType.release)
+    )
+    known = frozenset(k.removeprefix(release_prefix) for k in release_keys)
     stamped = await db.execute(
         update(Repo)
         .where(Repo.id == repo_id)
@@ -271,51 +282,71 @@ async def _start(db: AsyncSession, repo_id: uuid.UUID) -> _RepoSnapshot | None:
         never_send_to_llm=repo.never_send_to_llm,
         etag=repo.etag,
         last_seen_sha=repo.last_seen_sha,
-        since=since,
         created_at=repo.created_at,
         polled_at=polled_at,
         record_head_only=record_head_only,
+        known_releases=known,
     )
 
 
-def _new_refs(items: list[GhCommitRef], last_seen: str | None) -> tuple[list[GhCommitRef], bool]:
-    """Refs newer than `last_seen` (the listing is newest first) and whether it was reached."""
-    for i, ref in enumerate(items):
-        if ref.sha == last_seen:
-            return items[:i], True
-    return items, False
-
-
-async def _fetch(gh: GitHubClient, snap: _RepoSnapshot) -> _Fetched | None:
-    """All GitHub calls of a poll. None when the commit listing is unchanged (304)."""
-    page = await gh.list_commits(snap.full_name, snap.default_branch, snap.since, snap.etag)
-    if page.not_modified:
-        return None
-    refs, reached_last_seen = _new_refs(page.items, snap.last_seen_sha)
-    releases = await gh.list_releases(snap.full_name)
-    head = refs[0].sha if refs else None
-    if head is None or snap.record_head_only:
-        # Nothing new, or the first look at an old repo: its history is not one event.
-        return _Fetched(page.etag, head, None, [], {}, False, releases)
-
-    taken = refs[:MAX_COMMITS_PER_POLL]
-    truncated = len(refs) > MAX_COMMITS_PER_POLL or (
-        not reached_last_seen and len(refs) >= MAX_COMMITS_PER_POLL
+def _is_new_release(rel: GhRelease, snap: _RepoSnapshot) -> bool:
+    # Only releases published since the repo was added: a first sync must not flood.
+    return (
+        not rel.draft
+        and rel.published_at is not None
+        and rel.published_at > snap.created_at
+        and rel.tag_name not in snap.known_releases
     )
+
+
+async def _fetch(gh: GitHubClient, snap: _RepoSnapshot) -> _Fetched:
+    """All GitHub calls of a poll.
+
+    The commit listing has no `since` (it filters on committer date, so a commit pushed long
+    after it was made would be skipped forever) and a stable URL, so its ETag gives 304s.
+    Releases are checked on every poll, 304 included.
+    """
+    page = await gh.list_commits(snap.full_name, snap.default_branch, None, snap.etag)
+    releases = [r for r in await gh.list_releases(snap.full_name) if _is_new_release(r, snap)]
+    tip = page.items[0].sha if page.items else None
+    if tip is None or tip == snap.last_seen_sha:
+        return _Fetched(page.not_modified, page.etag, None, None, [], {}, False, releases)
+    if snap.record_head_only:
+        # The first look at an old repo: its history is not one event.
+        return _Fetched(False, page.etag, tip, None, [], {}, False, releases)
+
+    shas, base_sha, truncated = await _new_shas(gh, snap, [r.sha for r in page.items])
     commits = []
-    for detail in await _get_commits(gh, snap.full_name, [r.sha for r in taken]):
+    for detail in await _get_commits(gh, snap.full_name, shas):
         if len(detail.files) > MAX_FILES_PER_COMMIT:
             detail = detail.model_copy(update={"files": detail.files[:MAX_FILES_PER_COMMIT]})
             truncated = True
         commits.append((detail, classify(detail)))
+    dates = {r.sha: r.committed_at for r in page.items}
+    return _Fetched(False, page.etag, tip, base_sha, commits, dates, truncated, releases)
 
-    base_sha = None
-    if snap.last_seen_sha is not None:
-        # 404 means the old head is gone (force-push): the event has no base.
-        if await gh.compare(snap.full_name, snap.last_seen_sha, head) is not None:
-            base_sha = snap.last_seen_sha
-    dates = {r.sha: r.committed_at for r in taken}
-    return _Fetched(page.etag, head, base_sha, commits, dates, truncated, releases)
+
+async def _new_shas(
+    gh: GitHubClient, snap: _RepoSnapshot, page: list[str]
+) -> tuple[list[str], str | None, bool]:
+    """(new commit shas newest first, at most 100; base sha; truncated) for a moved branch tip.
+
+    `page` is the newest first page of the branch listing, which starts at the new tip.
+    """
+    last = snap.last_seen_sha
+    if last is None:  # first poll of a new repo: its recent history is one event
+        return page[:MAX_COMMITS_PER_POLL], None, len(page) >= MAX_COMMITS_PER_POLL
+    if last in page:
+        return page[: page.index(last)], last, False
+    between = await gh.compare(snap.full_name, last, page[0])
+    if between is None:  # 404: the old tip is gone (force-push), so the event has no base
+        return page[:MAX_COMMITS_PER_POLL], None, len(page) >= MAX_COMMITS_PER_POLL
+    if len(between) < MAX_COMMITS_PER_POLL:
+        # The complete range (oldest first); the page missed the old tip in a non-linear history.
+        return between[::-1], last, False
+    # 100+ new commits. The client reads compare's first page, which holds the OLDEST 100; the
+    # listing page holds the newest, which are the ones to keep (ARCHITECTURE.md 6).
+    return page[:MAX_COMMITS_PER_POLL], last, True
 
 
 async def _get_commits(gh: GitHubClient, full_name: str, shas: list[str]) -> list[GhCommit]:
@@ -382,9 +413,6 @@ async def _write(db: AsyncSession, snap: _RepoSnapshot, fetched: _Fetched) -> in
         )
     release_signals = EventSignals(EventType.release, 0, 0, False, False, False, [])
     for rel in fetched.releases:
-        # Only releases published since the repo was added: a first sync must not flood.
-        if rel.draft or rel.published_at is None or rel.published_at <= snap.created_at:
-            continue
         stats = {"tag": rel.tag_name, "name": rel.name, "prerelease": rel.prerelease}
         key = f"release:{snap.id}:{rel.tag_name}"
         rows.append(_event_row(snap.id, snap.mode, release_signals, key, stats))

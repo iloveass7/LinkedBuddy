@@ -89,18 +89,19 @@ def mock_github(
     commits: list[Any] | None = None,
     *,
     compare_status: int = 200,
+    compare: list[str] | None = None,
     releases: list[Any] | None = None,
     details: dict[str, Any] | None = None,
 ) -> dict[str, respx.Route]:
+    page = load("commits_list.json") if commits is None else commits
+    between = [c["sha"] for c in reversed(page)] if compare is None else compare
     return {
         "list": respx.get(f"{API}/repos/{REPO}/commits").respond(
-            200,
-            json=load("commits_list.json") if commits is None else commits,
-            headers={**OK, "etag": '"e1"'},
+            200, json=page, headers={**OK, "etag": '"e1"'}
         ),
         "detail": detail_route(details),
         "compare": respx.get(url__regex=rf"^{API}/repos/{REPO}/compare/").respond(
-            compare_status, json={"commits": []}, headers=OK
+            compare_status, json={"commits": [{"sha": sha} for sha in between]}, headers=OK
         ),
         "releases": respx.get(f"{API}/repos/{REPO}/releases").respond(
             200, json=releases or [], headers=OK
@@ -144,7 +145,9 @@ async def test_poll_idempotent(ctx: JobContext, db: AsyncSession) -> None:
     assert first["events_created"] == 1
     assert second["events_created"] == 0
     assert routes["detail"].call_count == 3  # the second poll stops at last_seen_sha
+    assert routes["compare"].call_count == 1  # BASE is not on the page: compare finds the range
     assert routes["list"].calls.last.request.headers["if-none-match"] == '"e1"'
+    assert "since" not in routes["list"].calls.last.request.url.params  # stable URL for ETag
     [event] = await events_of(db, repo)
     assert event.type == "push_group"
     assert event.dedupe_key == f"push:{repo.id}:{HEAD}"
@@ -175,11 +178,11 @@ async def test_poll_304_no_events(ctx: JobContext, db: AsyncSession) -> None:
     routes = mock_github()
     routes["list"].respond(304, headers=OK)
 
-    assert await run(ctx, repo) == {"not_modified": True}
+    assert await run(ctx, repo) == {"not_modified": True, "commits": 0, "events_created": 0}
 
     assert await events_of(db, repo) == []
     assert routes["detail"].call_count == 0
-    assert routes["releases"].call_count == 0
+    assert routes["releases"].call_count == 1  # releases are checked even on 304
     repo = await fresh(db, repo)
     assert repo.last_polled_at is not None
     assert (repo.etag, repo.last_seen_sha) == ('"e0"', BASE)
@@ -221,6 +224,7 @@ async def test_poll_caps_100_commits(ctx: JobContext, db: AsyncSession) -> None:
 
     result = await run(ctx, repo)
 
+    assert routes["compare"].call_count == 1  # BASE is beyond the page: compare confirms it
     assert routes["detail"].call_count == 100
     assert result["commits"] == 100
     [event] = await events_of(db, repo)
@@ -360,3 +364,47 @@ async def test_new_releases_create_events_once(ctx: JobContext, db: AsyncSession
 
 async def test_missing_repo_is_skipped(ctx: JobContext) -> None:
     assert await poll_repo(ctx, {"repo_id": str(uuid.uuid4())}) == {"skipped": "repo not found"}
+
+
+@respx.mock
+async def test_late_pushed_old_commit_ingested(ctx: JobContext, db: AsyncSession) -> None:
+    """A commit dated before the previous poll but pushed after it is still new."""
+    old_tip = "1" * 40
+    repo = await make_repo(db, last_seen_sha=old_tip, last_polled_at=datetime.now(UTC))
+    page = load("commits_list.json")
+    page[0]["commit"]["committer"]["date"] = "2020-01-01T00:00:00Z"
+    routes = mock_github(page)
+
+    await run(ctx, repo)
+
+    assert "since" not in routes["list"].calls.last.request.url.params
+    assert routes["compare"].call_count == 0  # old tip is on the page
+    [event] = await events_of(db, repo)
+    assert (event.base_sha, event.head_sha, event.stats["commits"]) == (old_tip, HEAD, 2)
+    assert await db.get(Commit, (repo.id, HEAD)) is not None
+
+
+@respx.mock
+async def test_old_tip_off_page_uses_compare_list(ctx: JobContext, db: AsyncSession) -> None:
+    """Non-linear history: the page misses the old tip, compare gives the exact new set."""
+    repo = await make_repo(db)
+    routes = mock_github(compare=["2" * 40, HEAD])
+
+    await run(ctx, repo)
+
+    assert routes["detail"].call_count == 2
+    [event] = await events_of(db, repo)
+    assert (event.base_sha, event.stats["commits"], event.stats["truncated"]) == (BASE, 2, False)
+
+
+@respx.mock
+async def test_304_still_checks_releases(ctx: JobContext, db: AsyncSession) -> None:
+    repo = await make_repo(db, etag='"e0"')
+    routes = mock_github(releases=load("releases.json"))
+    routes["list"].respond(304, headers=OK)
+
+    result = await run(ctx, repo)
+
+    assert result == {"not_modified": True, "commits": 0, "events_created": 1}
+    [event] = await events_of(db, repo)
+    assert event.dedupe_key == f"release:{repo.id}:v1.0.0"

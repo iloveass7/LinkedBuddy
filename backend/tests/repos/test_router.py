@@ -226,3 +226,18 @@ async def test_unknown_repo_404(api: AsyncClient) -> None:
     assert (await api.post(f"/api/repos/{missing}/poll")).status_code == 404
     assert (await api.patch(f"/api/repos/{missing}", json={"mode": "muted"})).status_code == 404
     assert (await api.post(f"/api/repos/{missing}/events", json={})).status_code == 404
+
+
+async def test_validation_errors_never_echo_input(api: AsyncClient, db: AsyncSession) -> None:
+    resp = await api.put("/api/connections/github", json={"github_token": TOKEN})
+    assert resp.status_code == 422
+    assert TOKEN not in resp.text
+    assert all(set(e) == {"loc", "msg", "type"} for e in resp.json()["detail"])
+
+    repo = await make_repo(db)
+    resp = await api.patch(f"/api/repos/{repo.id}", json={"demo_url": "http://leak.example"})
+    assert resp.status_code == 422
+    [error] = resp.json()["detail"]
+    assert error["loc"] == ["body", "demo_url"]
+    assert "https" in error["msg"]
+    assert "leak.example" not in resp.text

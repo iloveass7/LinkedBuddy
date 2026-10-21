@@ -4,8 +4,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, FastAPI, Response, status
+from fastapi import APIRouter, Depends, FastAPI, Request, Response, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +26,16 @@ from linkedbuddy.security.middleware import SecurityMiddleware
 class HealthResponse(BaseModel):
     status: str
     db: str
+
+
+async def _validation_error(request: Request, exc: Exception) -> JSONResponse:
+    """422 without `input` or `ctx`: request bodies carry tokens, passwords and post text, and
+    pydantic would echo them back (also under a misnamed key, via `missing`/`extra_forbidden`)."""
+    assert isinstance(exc, RequestValidationError)  # noqa: S101 - registered for this type only
+    errors = [{"loc": e["loc"], "msg": e["msg"], "type": e["type"]} for e in exc.errors()]
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": errors}
+    )
 
 
 @asynccontextmanager
@@ -50,6 +62,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if dev else None,
     )
     app.state.settings = settings
+    app.add_exception_handler(RequestValidationError, _validation_error)
     app.state.login_limiter = LoginRateLimiter()
 
     # Added last = outermost: CORS answers preflights, then the CSRF check and headers wrap the app.

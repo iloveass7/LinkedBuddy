@@ -75,7 +75,6 @@ async def upload_media(
     root = request.app.state.settings.media_dir
     name = new_media_name(ext)
     path = media_path(name, root)
-    await asyncio.to_thread(_write, path, clean)
     media = Media(
         draft_id=draft_id,
         type=MediaType.screenshot,
@@ -86,6 +85,7 @@ async def upload_media(
         position=0 if last is None else last + 1,
     )
     try:
+        await asyncio.to_thread(_write, path, clean)
         db.add(media)
         await db.flush()
         out = MediaOut.model_validate(media)
@@ -117,6 +117,43 @@ async def patch_media(media_id: uuid.UUID, body: MediaPatch, db: Session) -> Med
     return out
 
 
+async def _live_job(db: AsyncSession, key: str) -> Job | None:
+    return await db.scalar(
+        select(Job)
+        .where(Job.dedupe_key == key, Job.status.in_([JobStatus.queued, JobStatus.running]))
+        .order_by(Job.created_at.desc())
+        .limit(1)
+    )
+
+
+async def _queue_render(db: AsyncSession, media_id: uuid.UUID) -> uuid.UUID | None:
+    """Queue a render of the media's current source and return the job that will pick it up.
+
+    A queued job has not read the source yet, so it is reused. A running job may already have
+    read the old source (and finish between its last check and `complete()` with no one left to
+    notice the edit), so a follow-up under `diagram:<id>:next` is queued as well; the hash check
+    in the handler makes a redundant run cheap.
+    """
+    key = f"diagram:{media_id}"
+    payload = {"media_id": str(media_id)}
+    for _ in range(2):  # a live job may finish between the insert and the lookup
+        job_id = await enqueue(db, RENDER_DIAGRAM, payload, dedupe_key=key)
+        if job_id is not None:
+            return job_id
+        live = await _live_job(db, key)
+        if live is None:
+            continue
+        if live.status != JobStatus.running:
+            return live.id
+        follow_up = await enqueue(db, RENDER_DIAGRAM, payload, dedupe_key=f"{key}:next")
+        if follow_up is not None:
+            return follow_up
+        queued = await _live_job(db, f"{key}:next")
+        if queued is not None:
+            return queued.id
+    return None
+
+
 @router.put(
     "/media/{media_id}/mermaid", response_model=JobAccepted, status_code=status.HTTP_202_ACCEPTED
 )
@@ -129,22 +166,7 @@ async def put_mermaid(media_id: uuid.UUID, body: MermaidIn, db: Session) -> JobA
     media.mermaid_source = body.source
     media.status = MediaStatus.pending
     media.meta = {k: v for k, v in media.meta.items() if k != "reason"}
-    key = f"diagram:{media_id}"
-    payload = {"media_id": str(media_id)}
-    job_id = None
-    for _ in range(2):  # a live job may finish between the insert and the lookup
-        job_id = await enqueue(db, RENDER_DIAGRAM, payload, dedupe_key=key)
-        if job_id is None:
-            # A render is already queued or running: it re-checks the source hash when it
-            # finishes and re-runs itself if this edit arrived mid-render.
-            job_id = await db.scalar(
-                select(Job.id)
-                .where(Job.dedupe_key == key, Job.status.in_([JobStatus.queued, JobStatus.running]))
-                .order_by(Job.created_at.desc())
-                .limit(1)
-            )
-        if job_id is not None:
-            break
+    job_id = await _queue_render(db, media_id)
     if job_id is None:
         raise HTTPException(status.HTTP_409_CONFLICT, detail="job busy, retry")
     await db.commit()

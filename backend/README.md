@@ -51,7 +51,9 @@ PUPPETEER_SKIP_DOWNLOAD=1 npm install --prefix tools @mermaid-js/mermaid-cli
 echo '{"executablePath": "/path/to/chrome"}' > tools/puppeteer-config.json   # git-ignored
 ```
 
-Never add `--no-sandbox` to that file. If Chromium cannot start with its sandbox on this machine,
+That file only supplies `executablePath`: each render writes its own Puppeteer config in a private
+temp dir that also routes all browser traffic (loopback included) to a closed proxy, so a diagram
+cannot make the renderer fetch URLs. Never add `--no-sandbox` (it is stripped if present). If Chromium cannot start with its sandbox on this machine,
 diagrams are marked `failed` with a reason and the rest of the app keeps working.
 
 Settings: `MMDC_PATH` (default `tools/node_modules/.bin/mmdc`, falling back to `mmdc` on `PATH`)

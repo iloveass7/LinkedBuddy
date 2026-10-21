@@ -219,6 +219,52 @@ async def test_put_mermaid_queues_render(api: AsyncClient, db: AsyncSession) -> 
     assert again.status_code == 202 and again.json() == resp.json()  # live job is reused
 
 
+async def test_put_while_render_running_queues_a_follow_up(
+    api: AsyncClient, db: AsyncSession
+) -> None:
+    media = await seed_media(db, await seed_draft(db))
+    running = Job(
+        kind="render_diagram",
+        payload={"media_id": str(media.id)},
+        status="running",
+        dedupe_key=f"diagram:{media.id}",
+    )
+    db.add(running)
+    await db.commit()
+
+    resp = await api.put(f"/api/media/{media.id}/mermaid", json={"source": "flowchart LR\n X-->Y"})
+
+    assert resp.status_code == 202
+    follow_up = await db.get(Job, uuid.UUID(resp.json()["job_id"]))
+    assert follow_up and follow_up.id != running.id and follow_up.status == "queued"
+    assert follow_up.kind == "render_diagram"
+    assert follow_up.dedupe_key == f"diagram:{media.id}:next"
+    assert follow_up.payload == {"media_id": str(media.id)}
+
+    again = await api.put(f"/api/media/{media.id}/mermaid", json={"source": "flowchart LR\n P-->Q"})
+    assert again.json() == resp.json()  # one follow-up is enough: it reads the latest source
+
+
+async def test_upload_cleans_up_when_the_write_fails_midway(
+    api: AsyncClient, db: AsyncSession, media_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from linkedbuddy.media import router as media_router
+
+    real_write = media_router._write
+
+    def write_then_fail(path: Path, data: bytes) -> None:
+        real_write(path, data)
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(media_router, "_write", write_then_fail)
+    draft_id = await seed_draft(db)
+
+    with pytest.raises(OSError):
+        await api.post(f"/api/drafts/{draft_id}/media", **upload(png_bytes()))
+
+    assert not list(media_root.iterdir())
+
+
 async def test_put_mermaid_rejects_non_diagram_and_bad_body(
     api: AsyncClient, db: AsyncSession
 ) -> None:

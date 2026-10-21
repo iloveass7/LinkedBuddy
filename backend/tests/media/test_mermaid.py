@@ -1,7 +1,12 @@
 import asyncio
+import http.server
+import os
 import shutil
+import tempfile
+import threading
+import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +73,33 @@ def test_mermaid_rejects_click() -> None:
 )
 def test_mermaid_rejects_forbidden_constructs(bad: str) -> None:
     assert not check_mermaid(bad, TREE).ok
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "flowchart LR\nA[<img src=x>]-->B",
+        "flowchart LR\nA[<IMG SRC=http:127.0.0.1:9>]-->B",
+        'flowchart LR\nA["<a src=1>"]-->B',
+        "flowchart LR\nA-->B\nstyle A fill:url(#x)",
+        "flowchart LR\nA-->B\nclassDef c background:URL(x)",
+        "%%{init: {'themeCSS': '.node{background:red}'}}%%\nflowchart LR\nA-->B",
+        "flowchart LR\n%%{ init: {} }%%\nA-->B",
+        "flowchart LR\nA-->B\n@import 'x'",
+        "flowchart LR\nA[go to http:127.0.0.1]-->B",
+        "flowchart LR\nA[HTTPS:example.com]-->B",
+        "flowchart LR\nA[//evil.example/x]-->B",
+        "---\nconfig:\n  theme: dark\n---\nflowchart LR\nA-->B",
+        "  \n---\ntitle: x\n---\nflowchart LR\nA-->B",
+    ],
+)
+def test_mermaid_rejects_network_and_injection_constructs(bad: str) -> None:
+    check = check_mermaid(bad, TREE)
+    assert not check.ok
+    assert check.reason and check.reason in (
+        "diagram contains a forbidden construct",
+        "diagram contains an external reference or directive",
+    )  # fixed strings: nothing from the source is echoed
 
 
 def test_mermaid_rejects_empty_and_too_long() -> None:
@@ -157,6 +189,122 @@ async def test_render_mermaid_real(tmp_path: Path) -> None:
     await render_mermaid("flowchart LR\n  A[Query] --> B[Answer]", out, _settings())
     assert out.stat().st_size > 0
     assert out.read_bytes().startswith(mermaid.PNG_MAGIC)
+
+
+def _procs_mentioning(*needles: str) -> list[int]:
+    out: list[int] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit() or int(entry) == os.getpid():
+            continue
+        try:
+            with open(f"/proc/{entry}/cmdline", "rb") as f:  # noqa: ASYNC230 - tiny proc read
+                cmdline = f.read()
+            if all(n.encode() in cmdline for n in needles):
+                out.append(int(entry))
+        except OSError:
+            continue
+    return out
+
+
+BIG_FLOWCHART = "flowchart LR\n" + "\n".join(f"N{i} --> N{(i * 7 + 3) % 480}" for i in range(480))
+
+
+@pytest.fixture
+def private_tmp(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Every temp dir and browser profile of the test lands under a path unique to it. It must
+    stay short: Chromium's unix socket path limit is about 100 characters."""
+    tmp = Path(tempfile.mkdtemp(prefix="lbt-"))
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp))
+    monkeypatch.setenv("TMPDIR", str(tmp))
+    yield tmp
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def _assert_no_survivors(tmp: Path, *, seen_browser: bool) -> None:
+    assert seen_browser, "the browser never started: the test would prove nothing"
+    deadline = time.monotonic() + 5
+    while _procs_mentioning(str(tmp)) and time.monotonic() < deadline:  # noqa: ASYNC110
+        await asyncio.sleep(0.2)
+    leftover = _procs_mentioning(str(tmp))
+    for pid in leftover:  # do not leak into other tests even when failing
+        os.kill(pid, 9)
+    assert leftover == []
+
+
+async def _run_and_watch(tmp: Path, task: "asyncio.Future[None]") -> bool:
+    seen = False
+    while not task.done():
+        seen = seen or bool(_procs_mentioning("puppeteer_dev_chrome_profile", str(tmp)))
+        await asyncio.sleep(0.05)
+    return seen
+
+
+@pytest.mark.skipif(not _mmdc_available(), reason="mmdc is not installed (see README)")
+async def test_timeout_reaps_the_browser(
+    monkeypatch: pytest.MonkeyPatch, private_tmp: Path
+) -> None:
+    monkeypatch.setattr(mermaid, "RENDER_TIMEOUT_S", 1.5)
+    task = asyncio.ensure_future(render_mermaid(BIG_FLOWCHART, private_tmp / "o.png", _settings()))
+    seen = await _run_and_watch(private_tmp, task)
+    with pytest.raises(RenderFailed, match="timed out"):
+        await task
+    await _assert_no_survivors(private_tmp, seen_browser=seen)
+
+
+@pytest.mark.skipif(not _mmdc_available(), reason="mmdc is not installed (see README)")
+async def test_cancel_reaps_the_browser(private_tmp: Path) -> None:
+    task = asyncio.ensure_future(render_mermaid(BIG_FLOWCHART, private_tmp / "o.png", _settings()))
+    seen = False
+    for _ in range(100):  # wait for the browser, then cancel mid-render
+        if _procs_mentioning("puppeteer_dev_chrome_profile", str(private_tmp)):
+            seen = True
+            break
+        await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await _assert_no_survivors(private_tmp, seen_browser=seen)
+
+
+class _Counter(http.server.BaseHTTPRequestHandler):
+    hits: list[str] = []
+
+    def do_GET(self) -> None:  # noqa: N802
+        _Counter.hits.append(self.path)
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args: object) -> None:
+        pass
+
+
+@pytest.mark.skipif(not _mmdc_available(), reason="mmdc is not installed (see README)")
+@pytest.mark.parametrize(
+    "template",
+    [
+        "flowchart LR\n  A[<img src=http:127.0.0.1:{port}/a.png>] --> B",
+        "%%{{init: {{'themeCSS': '.node{{background:url(http://127.0.0.1:{port}/b.png)}}'}}}}%%\n"
+        "flowchart LR\n  A[hello] --> B",
+    ],
+)
+async def test_render_makes_no_network_requests(template: str, private_tmp: Path) -> None:
+    _Counter.hits = []
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Counter)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        src = template.format(port=server.server_address[1])
+        assert not check_mermaid(src, TREE).ok  # the static check rejects it as well
+        try:
+            # Straight to the renderer, bypassing check_mermaid: the browser itself must be
+            # unable to reach the listener.
+            await render_mermaid(src, private_tmp / "o.png", _settings())
+        except RenderFailed:
+            pass
+        await asyncio.sleep(0.5)
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert _Counter.hits == []
 
 
 # --- render_diagram job ------------------------------------------------------------------------
@@ -342,3 +490,112 @@ async def test_missing_media_is_skipped(ctx: JobContext) -> None:
     assert await render_diagram(ctx, {"media_id": str(uuid.uuid4())}) == {
         "skipped": "media not found"
     }
+
+
+class FailingSession:
+    """sessionmaker stand-in: the `fail_on`-th session opened raises instead of working."""
+
+    def __init__(self, real: Any, fail_on: int) -> None:
+        self.real, self.fail_on, self.opened = real, fail_on, 0
+
+    def __call__(self) -> Any:
+        self.opened += 1
+        if self.opened == self.fail_on:
+            raise ConnectionError("db went away")
+        return self.real()
+
+
+def _with_sessions(ctx: JobContext, maker: Any) -> JobContext:
+    return JobContext(maker, ctx.http, ctx.llm, ctx.settings)
+
+
+async def test_db_failure_after_render_leaves_no_file_and_marks_failed(
+    db: AsyncSession, ctx: JobContext, monkeypatch: pytest.MonkeyPatch, media_root: Path
+) -> None:
+    monkeypatch.setattr(mermaid, "render_mermaid", FakeRender())
+    media_id = await seed_diagram(db)
+    broken = _with_sessions(ctx, FailingSession(ctx.sessionmaker, fail_on=2))  # the store step
+
+    with pytest.raises(ConnectionError):
+        await render_diagram(broken, {"media_id": str(media_id)})
+
+    assert not list(media_root.iterdir())  # the rendered file was removed
+    media = await load(db, media_id)
+    assert media.status == "failed" and media.meta["reason"] == "render error"
+    assert media.file_path is None
+
+
+async def test_unexpected_render_error_marks_failed_and_reraises(
+    db: AsyncSession, ctx: JobContext, monkeypatch: pytest.MonkeyPatch, media_root: Path
+) -> None:
+    async def boom(src: str, out: Path, settings: Settings | None = None) -> None:
+        out.write_bytes(PNG)
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(mermaid, "render_mermaid", boom)
+    media_id = await seed_diagram(db)
+
+    with pytest.raises(RuntimeError):
+        await render_diagram(ctx, {"media_id": str(media_id)})
+
+    media = await load(db, media_id)
+    assert media.status == "failed" and media.meta["reason"] == "render error"
+    assert not list(media_root.iterdir())
+
+
+async def test_defer_does_not_mark_failed(
+    db: AsyncSession, ctx: JobContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    media_id = await seed_diagram(db)
+
+    async def render_then_edit(src: str, out: Path, settings: Settings | None = None) -> None:
+        out.write_bytes(PNG)
+        media = await load(db, media_id)
+        media.mermaid_source = "flowchart LR\n  NEW --> SRC"
+        await db.commit()
+
+    monkeypatch.setattr(mermaid, "render_mermaid", render_then_edit)
+    with pytest.raises(Defer):
+        await render_diagram(ctx, {"media_id": str(media_id)})
+    assert (await load(db, media_id)).status == "pending"
+
+
+async def test_bad_stored_file_path_counts_as_not_rendered(
+    db: AsyncSession, ctx: JobContext, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeRender()
+    monkeypatch.setattr(mermaid, "render_mermaid", fake)
+    media_id = await seed_diagram(db)
+    media = await load(db, media_id)
+    media.status, media.file_path, media.mime = "ready", "../../etc/passwd", "image/png"
+    media.meta = {"source_sha256": mermaid.source_hash(GOOD)}
+    await db.commit()
+
+    assert await render_diagram(ctx, {"media_id": str(media_id)}) == {"status": "ready"}
+
+    assert fake.calls == 1
+    assert (await load(db, media_id)).file_path != "../../etc/passwd"
+
+
+def test_puppeteer_config_is_generated_with_hardening(tmp_path: Path) -> None:
+    import json
+
+    configured = tmp_path / "pp.json"
+    configured.write_text(json.dumps({"executablePath": "/x/chrome", "args": ["--no-sandbox"]}))
+    settings = _settings().model_copy(update={"mmdc_puppeteer_config": configured})
+
+    path = mermaid._write_puppeteer_config(settings, tmp_path)
+
+    config = json.loads(path.read_text())
+    assert config["executablePath"] == "/x/chrome"
+    assert "--no-sandbox" not in config["args"]
+    assert "--proxy-server=http://127.0.0.1:9" in config["args"]
+    assert "--proxy-bypass-list=<-loopback>" in config["args"]
+
+
+def test_puppeteer_config_without_a_configured_file(tmp_path: Path) -> None:
+    import json
+
+    settings = _settings().model_copy(update={"mmdc_puppeteer_config": tmp_path / "missing.json"})
+    config = json.loads(mermaid._write_puppeteer_config(settings, tmp_path).read_text())
+    assert config == {"args": mermaid._BROWSER_ARGS}

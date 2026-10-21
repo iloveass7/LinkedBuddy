@@ -57,7 +57,7 @@ src/linkedbuddy/
 
 ```
 scheduler ──every POLL_INTERVAL_MINUTES──▶ enqueue poll_repo(repo)   [dedupe_key=poll:<repo_id>]
-poll_repo:  GET commits?since (If-None-Match) ── 304 → done, zero cost
+poll_repo:  GET commits page (If-None-Match), cut at last_seen_sha ── 304 → done, zero cost
             200 → fetch commit details concurrently (Semaphore 8) → classify (pure)
                 → upsert commits (one statement) → group into event (dedupe_key) → heuristic score (pure)
                 → apply repo mode + gate → status suggested|new
@@ -86,7 +86,7 @@ publish:    owner sends final text → post row with covered sha range → event
 
 ### GitHub
 - **Conditional requests always:** store `etag` per repo and send `If-None-Match`. A `304` does not count against the rate limit.
-- **Fetch only what changed:** `commits?since=<last_polled_at>&sha=<default_branch>`, then `GET /commits/{sha}` per new commit, run concurrently with `asyncio.Semaphore(8)`.
+- **Fetch only what changed (sha-based):** `commits?sha=<default_branch>&per_page=100` (no `since`, because GitHub filters on committer date, which drops late-pushed commits; the stable URL also keeps the ETag useful). Cut the list at `last_seen_sha`. If `last_seen_sha` is not on the page, call `compare`, and treat `None` as a force-push. Then `GET /commits/{sha}` per new commit, run concurrently with `asyncio.Semaphore(8)`. The release check runs on every poll, including a 304.
 - **Cap work per poll:** at most 100 new commits per repo per poll (older ones are classified as one `push_group` with `stats.truncated=true`). At most 300 files per commit (GitHub's own cap).
 - **Respect rate limits:** read `x-ratelimit-remaining`. When it drops below 100, stop the poll and re-enqueue the job with `run_after = x-ratelimit-reset`. On `403`/`429` with `retry-after`, re-enqueue with that delay.
 - **Known edge cases:** `409` on commits (empty repo) means no events, no error. `404` on compare (force-push) means falling back to a `push_group` with `base_sha = NULL`. A missing README (`404`) leaves `readme = None`.

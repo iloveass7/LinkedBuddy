@@ -2,13 +2,17 @@
 
 None of these functions commit: the caller's transaction does, so an enqueue is atomic with the
 caller's own writes and a claim's row lock is held only until the caller commits.
+
+`complete`, `fail` and `defer` take the `attempts` value of the claim they report on and only
+touch a job that is still `running` under that claim. They return False otherwise: the run was
+reclaimed as stale (and maybe claimed again), so its late outcome must not overwrite the newer one.
 """
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import case, func, select, text, update
+from sqlalchemy import CursorResult, Update, case, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,46 +79,56 @@ async def claim(db: AsyncSession, kinds: list[str]) -> Job | None:
     return job
 
 
-async def complete(db: AsyncSession, job_id: uuid.UUID, result: dict[str, Any]) -> None:
-    await db.execute(
-        update(Job)
-        .where(Job.id == job_id)
-        .values(
+def _of_claim(job_id: uuid.UUID, attempts: int) -> Update:
+    return update(Job).where(
+        Job.id == job_id, Job.status == JobStatus.running, Job.attempts == attempts
+    )
+
+
+async def _applied(db: AsyncSession, stmt: Update) -> bool:
+    result = cast(CursorResult[Any], await db.execute(stmt))
+    return result.rowcount == 1
+
+
+async def complete(
+    db: AsyncSession, job_id: uuid.UUID, result: dict[str, Any], *, attempts: int
+) -> bool:
+    return await _applied(
+        db,
+        _of_claim(job_id, attempts).values(
             status=JobStatus.done,
             result=result,
             error=None,
             locked_at=None,
             finished_at=func.now(),
-        )
+        ),
     )
 
 
-async def fail(db: AsyncSession, job_id: uuid.UUID, error: str) -> None:
+async def fail(db: AsyncSession, job_id: uuid.UUID, error: str, *, attempts: int) -> bool:
     """Record a failed attempt: re-queue with backoff 30 s * 2**attempts, or fail for good."""
     spent = Job.attempts >= Job.max_attempts
     backoff = func.make_interval(0, 0, 0, 0, 0, 0, BACKOFF_BASE_S * func.power(2, Job.attempts))
-    await db.execute(
-        update(Job)
-        .where(Job.id == job_id)
-        .values(
+    return await _applied(
+        db,
+        _of_claim(job_id, attempts).values(
             status=case((spent, JobStatus.failed.value), else_=JobStatus.queued.value),
             run_after=case((spent, Job.run_after), else_=func.now() + backoff),
             finished_at=case((spent, func.now()), else_=None),
             error=error,
             locked_at=None,
-        )
+        ),
     )
 
 
-async def defer(db: AsyncSession, job_id: uuid.UUID, until: datetime) -> None:
+async def defer(db: AsyncSession, job_id: uuid.UUID, until: datetime, *, attempts: int) -> bool:
     """Re-queue at `until` and give back the attempt the claim took (rate limits, not errors)."""
-    await db.execute(
-        update(Job)
-        .where(Job.id == job_id)
-        .values(
+    return await _applied(
+        db,
+        _of_claim(job_id, attempts).values(
             status=JobStatus.queued,
             attempts=func.greatest(Job.attempts - 1, 0),
             run_after=until,
             locked_at=None,
-        )
+        ),
     )

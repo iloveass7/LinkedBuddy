@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from linkedbuddy.config import Settings
 from linkedbuddy.llm.provider import LLMProvider
 
+# Long renders: own worker process and a longer stale-lock window (scheduler).
+RENDER_VIDEO = "render_video"
+
 
 @dataclass(frozen=True)
 class JobContext:

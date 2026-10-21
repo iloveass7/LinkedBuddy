@@ -137,30 +137,33 @@ async def _run(ctx: JobContext, job: Job, slots: asyncio.Semaphore) -> None:
             if handler is None:
                 raise LookupError(f"no handler for job kind {job.kind!r}")
             result = await handler(ctx, job.payload)
+            if not isinstance(result, dict):
+                raise TypeError(f"handler result must be a dict, got {type(result).__name__}")
+            duration_ms = int((time.monotonic() - started) * 1000)
+            # Inside the handled path: an unserializable result fails the attempt cleanly.
+            async with ctx.sessionmaker() as db:
+                saved = await complete(
+                    db, job.id, {**result, "duration_ms": duration_ms}, attempts=job.attempts
+                )
+                await db.commit()
+            outcome = f"done duration_ms={duration_ms}"
         except Defer as d:
             async with ctx.sessionmaker() as db:
-                await defer(db, job.id, d.until)
+                saved = await defer(db, job.id, d.until, attempts=job.attempts)
                 await db.commit()
-            log.info("job deferred id=%s kind=%s", job.id, job.kind)
-            return
+            outcome = "deferred"
         except Exception as exc:
             error = f"{type(exc).__name__}: {str(exc)[:ERROR_MAX_CHARS]}"
             async with ctx.sessionmaker() as db:
-                await fail(db, job.id, error)
+                saved = await fail(db, job.id, error, attempts=job.attempts)
                 await db.commit()
+            outcome = f"failed error_type={type(exc).__name__}"
+        if saved:
+            log.info("job %s id=%s kind=%s attempt=%d", outcome, job.id, job.kind, job.attempts)
+        else:
             log.warning(
-                "job failed id=%s kind=%s attempt=%d error_type=%s",
-                job.id,
-                job.kind,
-                job.attempts,
-                type(exc).__name__,
+                "stale outcome ignored id=%s kind=%s attempt=%d", job.id, job.kind, job.attempts
             )
-            return
-        duration_ms = int((time.monotonic() - started) * 1000)
-        async with ctx.sessionmaker() as db:
-            await complete(db, job.id, {**result, "duration_ms": duration_ms})
-            await db.commit()
-        log.info("job done id=%s kind=%s duration_ms=%d", job.id, job.kind, duration_ms)
     except Exception as exc:  # could not record the outcome; the stale-lock rule retries it
         log.error("job outcome not saved id=%s kind=%s: %s", job.id, job.kind, type(exc).__name__)
     finally:

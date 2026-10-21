@@ -10,19 +10,33 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, Delete, Update, case, delete, func, or_, select, update
+from sqlalchemy import (
+    CursorResult,
+    Delete,
+    Interval,
+    Update,
+    case,
+    delete,
+    func,
+    literal,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from linkedbuddy.config import get_settings
+from linkedbuddy.config import Settings, get_settings
 from linkedbuddy.db.engine import make_engine, make_sessionmaker
 from linkedbuddy.db.models import AuthSession, Draft, Event, Job, Repo
 from linkedbuddy.enums import JobStatus, RepoMode
+from linkedbuddy.jobs.context import RENDER_VIDEO
 from linkedbuddy.jobs.queue import enqueue
 
 log = logging.getLogger(__name__)
 
 TICK_INTERVAL_S = 60.0
 STALE_LOCK = timedelta(minutes=10)
+VIDEO_STALE_MARGIN = timedelta(minutes=5)  # on top of video_timeout_s
 DONE_JOB_TTL = timedelta(days=7)
 FAILED_JOB_TTL = timedelta(days=30)
 CONTEXT_TTL = timedelta(days=7)  # after the event's newest draft (SECURITY.md 6.9)
@@ -39,12 +53,10 @@ class TickReport:
     contexts_cleared: int = 0
 
 
-async def tick(
-    db: AsyncSession, now: datetime, *, poll_interval: timedelta | None = None
-) -> TickReport:
+async def tick(db: AsyncSession, now: datetime, *, settings: Settings | None = None) -> TickReport:
     """One scheduler pass. Does not commit; the caller commits the whole pass."""
-    if poll_interval is None:
-        poll_interval = timedelta(minutes=get_settings().poll_interval_minutes)
+    settings = settings or get_settings()
+    poll_interval = timedelta(minutes=settings.poll_interval_minutes)
     report = TickReport()
 
     due = await db.scalars(
@@ -59,14 +71,20 @@ async def tick(
         )
         report.polls_enqueued += job_id is not None
 
+    # Video renders legitimately run up to video_timeout_s. Lock ages use DB time, like claim().
+    video_window = timedelta(seconds=settings.video_timeout_s) + VIDEO_STALE_MARGIN
+    window = case(
+        (Job.kind == RENDER_VIDEO, literal(video_window, Interval)),
+        else_=literal(STALE_LOCK, Interval),
+    )
     spent = Job.attempts >= Job.max_attempts
     reclaimed = await db.scalars(
         update(Job)
-        .where(Job.status == JobStatus.running, Job.locked_at < now - STALE_LOCK)
+        .where(Job.status == JobStatus.running, Job.locked_at < func.now() - window)
         .values(
             status=case((spent, JobStatus.failed.value), else_=JobStatus.queued.value),
             error=case((spent, "stale lock: worker did not finish"), else_=Job.error),
-            finished_at=case((spent, now), else_=None),
+            finished_at=case((spent, func.now()), else_=None),
             locked_at=None,
         )
         .returning(Job.status)
@@ -113,12 +131,11 @@ async def run_scheduler(stop: asyncio.Event) -> None:
     settings = get_settings()
     engine = make_engine(settings.database_url)
     sm = make_sessionmaker(engine)
-    poll_interval = timedelta(minutes=settings.poll_interval_minutes)
     try:
         while not stop.is_set():
             try:
                 async with sm() as db:
-                    report = await tick(db, datetime.now(UTC), poll_interval=poll_interval)
+                    report = await tick(db, datetime.now(UTC), settings=settings)
                     await db.commit()
                 log.info("tick %s", asdict(report))
             except Exception as exc:  # DB hiccup: try again next tick

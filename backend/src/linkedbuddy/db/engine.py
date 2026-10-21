@@ -28,6 +28,9 @@ def make_engine(url: str) -> AsyncEngine:
         max_overflow=5,
         pool_pre_ping=True,
         pool_recycle=1800,
+        # str(DBAPIError) would otherwise embed bound values (README text, post bodies) in
+        # logs and jobs.error (SECURITY.md 7).
+        hide_parameters=True,
     )
 
 

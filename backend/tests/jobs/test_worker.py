@@ -29,7 +29,11 @@ async def _boom(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     raise ValueError("nope")
 
 
-TEST_HANDLERS = {"t_echo": _echo, "t_defer": _defer, "t_boom": _boom}
+async def _none(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
+    return None  # type: ignore[return-value]
+
+
+TEST_HANDLERS = {"t_echo": _echo, "t_defer": _defer, "t_boom": _boom, "t_none": _none}
 
 
 @pytest.fixture(scope="module")
@@ -102,3 +106,12 @@ async def test_worker_records_handler_error(
     job = await _wait_for(committed, job_id, lambda j: j.error is not None)
     assert job.error == "ValueError: nope"
     assert (job.status, job.attempts) == ("queued", 1)  # retried later with backoff
+
+
+async def test_worker_rejects_non_dict_result(
+    worker: None, committed: async_sessionmaker[AsyncSession]
+) -> None:
+    job_id = await _enqueue(committed, "t_none")
+    job = await _wait_for(committed, job_id, lambda j: j.status != "running" and j.attempts == 1)
+    assert job.status in ("queued", "failed")
+    assert job.error is not None and "NoneType" in job.error

@@ -3,8 +3,9 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from linkedbuddy.config import Settings
 from linkedbuddy.db.models import AuthSession, Draft, Event, Job, Repo
-from linkedbuddy.jobs.queue import claim, defer, enqueue, fail
+from linkedbuddy.jobs.queue import claim, complete, defer, enqueue, fail
 from linkedbuddy.scheduler import tick
 
 KIND = "test_kind"
@@ -47,7 +48,7 @@ async def test_fail_retries_then_fails(committed: async_sessionmaker[AsyncSessio
         for attempt in (1, 2, 3):
             job = await claim(s, [KIND])
             assert job is not None and job.attempts == attempt
-            await fail(s, job.id, "RuntimeError: boom")
+            assert await fail(s, job.id, "RuntimeError: boom", attempts=job.attempts)
             await s.commit()
             job = await s.get(Job, job_id, populate_existing=True)
             assert job is not None
@@ -72,7 +73,7 @@ async def test_defer_does_not_consume_attempt(committed: async_sessionmaker[Asyn
         await s.commit()
         job = await claim(s, [KIND])
         assert job is not None and job.attempts == 1
-        await defer(s, job.id, until)
+        assert await defer(s, job.id, until, attempts=job.attempts)
         await s.commit()
         job = await s.get(Job, job_id, populate_existing=True)
         assert job is not None
@@ -82,6 +83,24 @@ async def test_defer_does_not_consume_attempt(committed: async_sessionmaker[Asyn
             until,
             None,
         )
+
+
+async def test_outcome_ignored_after_reclaim(db: AsyncSession) -> None:
+    job_id = await enqueue(db, "t_reclaim", {})
+    old = await claim(db, ["t_reclaim"])
+    assert old is not None and old.attempts == 1
+    # The scheduler reclaims the stale run and another worker claims it again.
+    await db.execute(update(Job).where(Job.id == job_id).values(status="queued", locked_at=None))
+    new = await claim(db, ["t_reclaim"])
+    assert new is not None and new.attempts == 2
+
+    assert await complete(db, job_id, {"ok": True}, attempts=1) is False
+    assert await fail(db, job_id, "late", attempts=1) is False
+    assert await defer(db, job_id, datetime.now(UTC), attempts=1) is False
+    job = await db.get(Job, job_id, populate_existing=True)
+    assert job is not None
+    assert (job.status, job.attempts, job.result, job.error) == ("running", 2, None, None)
+    assert await complete(db, job_id, {"ok": True}, attempts=2) is True
 
 
 async def _repo(db: AsyncSession, n: int, mode: str, last_polled_at: datetime | None) -> Repo:
@@ -97,14 +116,14 @@ async def _repo(db: AsyncSession, n: int, mode: str, last_polled_at: datetime | 
     return repo
 
 
-async def test_stale_lock_reclaimed(db: AsyncSession) -> None:
+async def test_stale_lock_reclaimed(db: AsyncSession, settings: Settings) -> None:
     now = datetime.now(UTC)
     stale = Job(kind=KIND, status="running", attempts=1, locked_at=now - timedelta(minutes=11))
     spent = Job(kind=KIND, status="running", attempts=3, locked_at=now - timedelta(minutes=11))
     fresh = Job(kind=KIND, status="running", attempts=1, locked_at=now - timedelta(minutes=2))
     db.add_all([stale, spent, fresh])
     await db.flush()
-    report = await tick(db, now, poll_interval=timedelta(minutes=180))
+    report = await tick(db, now, settings=settings)
     assert (report.stale_requeued, report.stale_failed) == (1, 1)
     for job in (stale, spent, fresh):
         await db.refresh(job)
@@ -113,7 +132,25 @@ async def test_stale_lock_reclaimed(db: AsyncSession) -> None:
     assert fresh.status == "running"
 
 
-async def test_scheduler_skips_muted_and_recent(db: AsyncSession) -> None:
+async def test_video_stale_window(db: AsyncSession, settings: Settings) -> None:
+    assert settings.video_timeout_s == 600  # window = 600 + 300 s = 15 min
+    now = datetime.now(UTC)
+    rendering = Job(
+        kind="render_video", status="running", attempts=1, locked_at=now - timedelta(minutes=11)
+    )
+    stuck = Job(
+        kind="render_video", status="running", attempts=1, locked_at=now - timedelta(minutes=16)
+    )
+    db.add_all([rendering, stuck])
+    await db.flush()
+    await tick(db, now, settings=settings)
+    await db.refresh(rendering)
+    await db.refresh(stuck)
+    assert rendering.status == "running"
+    assert stuck.status == "queued"
+
+
+async def test_scheduler_skips_muted_and_recent(db: AsyncSession, settings: Settings) -> None:
     now = datetime.now(UTC)
     due_never = await _repo(db, 1, "always_suggest", None)
     due_old = await _repo(db, 2, "manual_only", now - timedelta(hours=4))
@@ -121,18 +158,18 @@ async def test_scheduler_skips_muted_and_recent(db: AsyncSession) -> None:
     await _repo(db, 4, "releases_and_large", now - timedelta(hours=1))
     await db.flush()
 
-    report = await tick(db, now, poll_interval=timedelta(minutes=180))
+    report = await tick(db, now, settings=settings)
     assert report.polls_enqueued == 2
     jobs = (await db.scalars(select(Job).where(Job.kind == "poll_repo"))).all()
     assert sorted(j.dedupe_key or "" for j in jobs) == sorted(
         [f"poll:{due_never.id}", f"poll:{due_old.id}"]
     )
     assert {j.payload["repo_id"] for j in jobs} == {str(due_never.id), str(due_old.id)}
-    again = await tick(db, now, poll_interval=timedelta(minutes=180))
+    again = await tick(db, now, settings=settings)
     assert again.polls_enqueued == 0  # deduped while queued
 
 
-async def test_scheduler_purges_retention(db: AsyncSession) -> None:
+async def test_scheduler_purges_retention(db: AsyncSession, settings: Settings) -> None:
     now = datetime.now(UTC)
     db.add_all(
         [
@@ -144,7 +181,7 @@ async def test_scheduler_purges_retention(db: AsyncSession) -> None:
         ]
     )
     await db.flush()
-    report = await tick(db, now, poll_interval=timedelta(minutes=180))
+    report = await tick(db, now, settings=settings)
     assert report.sessions_deleted >= 1
     assert report.done_jobs_deleted >= 1
     assert report.failed_jobs_deleted >= 1
@@ -169,7 +206,7 @@ async def _event_with_draft(db: AsyncSession, repo: Repo, key: str, drafted_at: 
     return event
 
 
-async def test_scheduler_clears_old_context(db: AsyncSession) -> None:
+async def test_scheduler_clears_old_context(db: AsyncSession, settings: Settings) -> None:
     now = datetime.now(UTC)
     repo = await _repo(db, 5, "muted", None)
     await db.flush()
@@ -178,7 +215,7 @@ async def test_scheduler_clears_old_context(db: AsyncSession) -> None:
     db.add(Draft(event_id=recent.id, tone="casual", body="b", model="m", prompt_version="v1"))
     await db.flush()
 
-    report = await tick(db, now, poll_interval=timedelta(minutes=180))
+    report = await tick(db, now, settings=settings)
     assert report.contexts_cleared >= 1
     await db.refresh(old)
     await db.refresh(recent)

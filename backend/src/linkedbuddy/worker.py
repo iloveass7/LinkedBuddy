@@ -5,11 +5,12 @@ import asyncio
 import logging
 import signal
 
+from linkedbuddy.jobs.context import RENDER_VIDEO
 from linkedbuddy.jobs.handlers import HANDLERS
 from linkedbuddy.jobs.worker import run_worker
 
 # Video renders get their own process (`--kinds render_video --concurrency 1`).
-ISOLATED_KINDS = frozenset({"render_video"})
+ISOLATED_KINDS = frozenset({RENDER_VIDEO})
 
 
 def _parse(argv: list[str] | None) -> tuple[list[str], int]:

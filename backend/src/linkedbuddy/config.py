@@ -35,11 +35,33 @@ class Settings(BaseSettings):
     gemini_rpm_fast: int = 10
     gemini_rpm_quality: int = 5
     frontend_origins: list[str] = ["http://localhost:5173"]
-    media_root: Path = Path("var/media")
+    media_root: Path = Path("var/media")  # relative paths are resolved against the backend dir
+    # Relative to the backend dir; falls back to `mmdc` on PATH when this file does not exist.
+    mmdc_path: str = "tools/node_modules/.bin/mmdc"
+    # Optional Puppeteer config (browser executablePath); defaults to tools/puppeteer-config.json
+    # when that file exists. Never put `--no-sandbox` in it (SECURITY.md 5.5).
+    mmdc_puppeteer_config: Path | None = None
     poll_interval_minutes: int = 180
     brag_command: list[str] | None = None
     video_timeout_s: int = 600
     allow_public_bind: bool = False
+
+    @property
+    def media_dir(self) -> Path:
+        """MEDIA_ROOT as an absolute path."""
+        return _BACKEND_DIR / self.media_root  # an absolute media_root wins over the prefix
+
+    @property
+    def mmdc_executable(self) -> str:
+        local = _BACKEND_DIR / self.mmdc_path
+        return str(local) if local.is_file() else "mmdc"
+
+    @property
+    def mmdc_puppeteer_file(self) -> Path | None:
+        if self.mmdc_puppeteer_config is not None:
+            return _BACKEND_DIR / self.mmdc_puppeteer_config
+        default = _BACKEND_DIR / "tools" / "puppeteer-config.json"
+        return default if default.is_file() else None
 
     @field_validator("frontend_origins")
     @classmethod

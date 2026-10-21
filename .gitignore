@@ -25,3 +25,5 @@ backend/var/
 
 # SDD workspaces
 .superpowers/
+# Machine-specific mmdc browser path (see backend/README.md)
+backend/tools/puppeteer-config.json

@@ -100,8 +100,8 @@ async def tick(db: AsyncSession, now: datetime, *, settings: Settings | None = N
         else:
             report.stale_requeued += 1
 
-    # An event left `generating` with no live generate_draft job (the worker died, or a run
-    # restored a status that was itself `generating`) goes back to the inbox.
+    # An event left `generating` with no live generate_draft job (the worker died) goes back to
+    # the inbox: `drafted` if it already has drafts, else `suggested`.
     live_generate = exists().where(
         Job.kind == "generate_draft",
         Job.status.in_([JobStatus.queued, JobStatus.running]),
@@ -111,7 +111,12 @@ async def tick(db: AsyncSession, now: datetime, *, settings: Settings | None = N
         db,
         update(Event)
         .where(Event.status == EventStatus.generating, ~live_generate)
-        .values(status=EventStatus.suggested),
+        .values(
+            status=case(
+                (exists().where(Draft.event_id == Event.id), EventStatus.drafted.value),
+                else_=EventStatus.suggested.value,
+            )
+        ),
     )
 
     report.sessions_deleted = await _count(

@@ -29,7 +29,7 @@ from linkedbuddy.enums import PrivacyMode, RepoVisibility
 from linkedbuddy.github.client import GhCommit, GhRelease, GitHubClient
 from linkedbuddy.security.redact import RedactionBlocked, redact
 
-CONTEXT_VERSION = "1"  # bump whenever the builder's output changes: it invalidates every cache
+CONTEXT_VERSION = "2"  # bump whenever the builder's output changes: it invalidates every cache
 CONTEXT_CHAR_BUDGET = 24_000
 RATING_SUMMARY_LIMIT = 4_000
 
@@ -58,9 +58,10 @@ SUMMARY_ENTRY_CHARS = 300
 
 EvidenceKind = Literal["readme", "commit", "file", "release", "prev_post", "repo"]
 
-# Any spelling of the tag a model might honour: spaces, an escaped slash, attributes. Fullwidth
-# and other compatibility forms are folded to ASCII by NFKC first.
-_DELIMITER_RE = re.compile(r"<\s*\\?/?\s*repo_context\b[^>]*>", re.IGNORECASE)
+# Any spelling of the tag a model might honour: spaces, an escaped slash, attributes, and no
+# closing ">" at all (an unterminated "</repo_context" still reads as a close). Attributes stop at
+# a line end. Fullwidth and other compatibility forms are folded to ASCII by NFKC first.
+_DELIMITER_RE = re.compile(r"<\s*\\?/?\s*repo_context\b[^>\n]*>?", re.IGNORECASE)
 # Redaction kinds that block a private repo. Emails are still redacted but do not block.
 _NON_BLOCKING_KINDS = frozenset({"email"})
 _KEY_END_RE = re.compile(r"-----END [A-Z ]*PRIVATE KEY")

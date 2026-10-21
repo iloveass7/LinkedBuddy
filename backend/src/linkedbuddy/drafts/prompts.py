@@ -165,9 +165,10 @@ def quick_edit_system_prompt(ban_list: list[str]) -> str:
     return QUICK_EDIT_SYSTEM_PROMPT.format(ban_list="; ".join(f'"{p}"' for p in ban_list))
 
 
-# Any spelling of a quick-edit delimiter (or the repo one): text inside a block cannot close it.
+# Any spelling of a quick-edit delimiter (or the repo one), terminated or not: text inside a
+# block cannot close it.
 _EDIT_TAG_RE = re.compile(
-    r"<\s*\\?/?\s*(?:current_draft|draft_segments|owner_instruction|repo_context)\b[^>]*>",
+    r"<\s*\\?/?\s*(?:current_draft|draft_segments|owner_instruction|repo_context)\b[^>\n]*>?",
     re.IGNORECASE,
 )
 

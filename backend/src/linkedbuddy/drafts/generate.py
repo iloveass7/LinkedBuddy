@@ -56,6 +56,8 @@ RENDER_DIAGRAM = "render_diagram"
 DRAFT_TEMPERATURE = 0.8
 QUICK_EDIT_TEMPERATURE = 0.5
 QUICK_EDIT_TIMEOUT_S = 30.0
+# Statuses a run moves to `generating` (and back on failure).
+GENERATABLE = (EventStatus.new, EventStatus.suggested, EventStatus.drafted)
 
 
 def _draft_values(variant: Variant, known_ids: set[str], bans: list[str]) -> dict[str, Any]:
@@ -118,8 +120,13 @@ async def _already_generated(
     return found is not None
 
 
-async def _restore(ctx: JobContext, event_id: uuid.UUID, prior: str) -> None:
-    """Put the prior status back, unless something else (a dismissal) changed it meanwhile."""
+async def _restore(ctx: JobContext, event_id: uuid.UUID, prior: str | None) -> None:
+    """Put the prior status back, unless something else (a dismissal) changed it meanwhile.
+
+    `prior` is None when this run never moved the event to `generating`: nothing to undo.
+    """
+    if prior is None:
+        return
     async with ctx.sessionmaker() as db:
         await db.execute(
             update(Event)
@@ -144,9 +151,15 @@ async def generate_draft(ctx: JobContext, payload: dict[str, Any]) -> dict[str, 
         if await _already_generated(db, payload, event_id, parent_id, tone):
             return {"skipped": "already_generated"}
         gh = await ingest.get_github_client(db, ctx.http, ctx.settings)
-        await db.execute(
-            update(Event).where(Event.id == event_id).values(status=EventStatus.generating)
+        # Only an inbox status moves to `generating`. A dismissed or posted event keeps its
+        # status (the drafts are still made), and a concurrent run's `generating` is left alone.
+        moved = await db.execute(
+            update(Event)
+            .where(Event.id == event_id, Event.status.in_(GENERATABLE))
+            .values(status=EventStatus.generating)
+            .returning(Event.status)
         )
+        restore_to = prior if moved.first() is not None else None
         await db.commit()
 
     try:
@@ -182,19 +195,19 @@ async def generate_draft(ctx: JobContext, payload: dict[str, Any]) -> dict[str, 
                 result.alt_text_diagram,
             )
     except RedactionBlocked:
-        await _restore(ctx, event_id, prior)
+        await _restore(ctx, event_id, restore_to)
         return {"skipped": "privacy"}
     except LLMUnavailable:
-        await _restore(ctx, event_id, prior)
+        await _restore(ctx, event_id, restore_to)
         return {"skipped": "llm_unavailable"}
     except LLMRateLimited as exc:
-        await _restore(ctx, event_id, prior)
+        await _restore(ctx, event_id, restore_to)
         raise Defer(datetime.now(UTC) + timedelta(seconds=exc.retry_after)) from exc
     except GitHubRateLimited as exc:
-        await _restore(ctx, event_id, prior)
+        await _restore(ctx, event_id, restore_to)
         raise Defer(exc.reset_at) from exc
-    except Exception:
-        await _restore(ctx, event_id, prior)
+    except BaseException:  # also CancelledError, when the worker shuts down mid-call
+        await _restore(ctx, event_id, restore_to)
         raise
     return {"drafts": len(rows), "diagram": diagram_queued}
 
@@ -211,8 +224,8 @@ async def _store(
 ) -> bool:
     """Insert the drafts (and the diagram), then mark the event drafted. One transaction.
 
-    The drafts are kept even if the owner dismissed the event meanwhile: only an event still
-    `generating` becomes `drafted`.
+    The drafts are always kept: only an event still `generating` becomes `drafted`, so a dismissed
+    or posted event (before or during the run) keeps its status.
     """
     drafts = [
         Draft(

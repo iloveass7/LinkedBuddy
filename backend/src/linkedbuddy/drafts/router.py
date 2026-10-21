@@ -18,7 +18,7 @@ from linkedbuddy.db.engine import get_session
 from linkedbuddy.db.models import Draft, Event, Job, Media
 from linkedbuddy.drafts import generate
 from linkedbuddy.drafts.lint import LINKEDIN_MAX_CHARS, lint
-from linkedbuddy.enums import DraftStatus, JobStatus, Tone
+from linkedbuddy.enums import DraftStatus, EventStatus, JobStatus, Tone
 from linkedbuddy.inbox.service import log_decision
 from linkedbuddy.jobs.queue import enqueue
 from linkedbuddy.llm.provider import LLMInvalidOutput, LLMRateLimited, LLMUnavailable
@@ -151,6 +151,8 @@ async def generate_for_event(
     event = await db.get(Event, event_id)
     if event is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="event not found")
+    if event.status == EventStatus.dismissed:
+        event.status = EventStatus.suggested  # the owner asked for drafts: back to the inbox
     tone = body.tone if body else None
     payload = {"event_id": str(event_id), "tone": tone, "parent_draft_id": None}
     job_id, queued = await _enqueue_generate(db, payload, f"generate:{event_id}")

@@ -234,6 +234,7 @@ async def test_scheduler_resets_stuck_generating(db: AsyncSession, settings: Set
             ("queued", "generating"),
             ("running", "generating"),
             ("other_job_done", "generating"),
+            ("has_drafts", "generating"),
             ("drafted", "drafted"),
         ]
     }
@@ -264,11 +265,16 @@ async def test_scheduler_resets_stuck_generating(db: AsyncSession, settings: Set
             ),
         ]
     )
+    db.add(
+        Draft(
+            event_id=events["has_drafts"].id, tone="casual", body="b", model="m", prompt_version="v"
+        )
+    )
     await db.flush()
 
     report = await tick(db, now, settings=settings)
 
-    assert report.generating_reset == 2
+    assert report.generating_reset == 3
     for event in events.values():
         await db.refresh(event)
     assert {name: e.status for name, e in events.items()} == {
@@ -276,5 +282,6 @@ async def test_scheduler_resets_stuck_generating(db: AsyncSession, settings: Set
         "queued": "generating",
         "running": "generating",
         "other_job_done": "suggested",
+        "has_drafts": "drafted",
         "drafted": "drafted",
     }

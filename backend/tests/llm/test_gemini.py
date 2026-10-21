@@ -173,3 +173,11 @@ async def test_app_lifespan_sets_llm_state() -> None:
     app = create_app(_settings())
     async with app.router.lifespan_context(app):
         assert isinstance(app.state.llm, UnavailableLLM)
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+async def test_make_llm_blank_key_is_unavailable(blank: str) -> None:
+    llm = make_llm(_settings(gemini_api_key=SecretStr(blank)))
+    assert isinstance(llm, UnavailableLLM)
+    with pytest.raises(LLMUnavailable):
+        await llm.generate_json(tier="fast", system="s", user="u", schema=Model, temperature=0.1)

@@ -109,10 +109,11 @@ class GeminiProvider:
 
 def make_llm(settings: Settings) -> LLMProvider:
     """GeminiProvider when a key is configured, else a provider that raises LLMUnavailable."""
-    if settings.gemini_api_key is None:
+    api_key = settings.gemini_api_key.get_secret_value().strip() if settings.gemini_api_key else ""
+    if not api_key:  # unset or blank (GEMINI_API_KEY=) must not crash startup
         return UnavailableLLM()
     return GeminiProvider(
-        api_key=settings.gemini_api_key.get_secret_value(),
+        api_key=api_key,
         model_fast=settings.gemini_model_fast,
         model_quality=settings.gemini_model_quality,
         rpm_fast=settings.gemini_rpm_fast,

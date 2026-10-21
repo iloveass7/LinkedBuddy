@@ -31,8 +31,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from linkedbuddy.config import Settings, get_settings
 from linkedbuddy.db.engine import make_engine, make_sessionmaker
-from linkedbuddy.db.models import AuthSession, Draft, Event, Job, Repo
-from linkedbuddy.enums import EventStatus, JobStatus, RepoMode
+from linkedbuddy.db.models import AuthSession, Draft, Event, Job, Media, Repo
+from linkedbuddy.enums import EventStatus, JobStatus, MediaStatus, MediaType, RepoMode
 from linkedbuddy.jobs.context import RENDER_VIDEO
 from linkedbuddy.jobs.queue import enqueue
 
@@ -56,6 +56,7 @@ class TickReport:
     failed_jobs_deleted: int = 0
     contexts_cleared: int = 0
     generating_reset: int = 0
+    media_interrupted: int = 0
 
 
 async def tick(db: AsyncSession, now: datetime, *, settings: Settings | None = None) -> TickReport:
@@ -116,6 +117,29 @@ async def tick(db: AsyncSession, now: datetime, *, settings: Settings | None = N
                 (exists().where(Draft.event_id == Event.id), EventStatus.drafted.value),
                 else_=EventStatus.suggested.value,
             )
+        ),
+    )
+
+    # A render the worker died in (final attempt, so no job is left) must not stay `pending`: it
+    # would show a spinner forever and count against the 20-item cap. Runs after the stale-lock
+    # reclaim above, which is what turns such a job into `failed`. Needs no age grace: the routes
+    # insert the media row and its job in one transaction.
+    live_render = exists().where(
+        Job.kind.in_(["render_diagram", RENDER_VIDEO]),
+        Job.status.in_([JobStatus.queued, JobStatus.running]),
+        Job.payload["media_id"].astext == Media.id.cast(Text),
+    )
+    report.media_interrupted = await _count(
+        db,
+        update(Media)
+        .where(
+            Media.status == MediaStatus.pending,
+            Media.type.in_([MediaType.diagram, MediaType.video]),
+            ~live_render,
+        )
+        .values(
+            status=MediaStatus.failed.value,
+            meta=Media.meta.concat({"reason": "render interrupted"}),
         ),
     )
 

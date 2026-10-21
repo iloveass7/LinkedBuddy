@@ -29,6 +29,7 @@ class BragRenderer:
     async def render(self, script: VideoScript, assets: dict[uuid.UUID, Path], out: Path) -> None:
         work = Path(tempfile.mkdtemp(prefix="lb-brag-"))  # mode 0700
         proc: asyncio.subprocess.Process | None = None
+        ok = False
         try:
             json_path = work / "script.json"
             payload = {
@@ -57,13 +58,16 @@ class BragRenderer:
             if proc.returncode != 0:
                 raise RenderFailed("renderer failed")
             _check_mp4(out)
-        except RenderFailed:
-            await asyncio.to_thread(out.unlink, missing_ok=True)
-            raise
+            ok = True
         finally:
-            if proc is not None:
-                await reap(proc, work)
-            shutil.rmtree(work, ignore_errors=True)
+            # Reap first, then delete: a renderer may write its output while it is being stopped.
+            try:
+                if proc is not None:
+                    await reap(proc, work)
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+                if not ok:
+                    out.unlink(missing_ok=True)  # noqa: ASYNC240 - sync: must run when cancelled
 
 
 def _check_mp4(out: Path) -> None:

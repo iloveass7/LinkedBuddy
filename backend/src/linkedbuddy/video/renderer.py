@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated, Literal, Protocol, Self
 
-from pydantic import BaseModel, Field, WithJsonSchema, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, WithJsonSchema, model_validator
 
 MIN_SCENES = 3
 MAX_SCENES = 12
@@ -16,9 +16,25 @@ MIN_SCENE_S = 1.0
 MAX_SCENE_S = 15.0
 MAX_TOTAL_S = 90.0
 
+
+def _uuid_or_none(value: object) -> uuid.UUID | None:
+    """The model may write "", "none" or "diagram-1": anything that is not a UUID is no reference
+    (the scene stays; failing the whole script would only burn another quality-tier call)."""
+    if isinstance(value, uuid.UUID):
+        return value
+    if isinstance(value, str):
+        try:
+            return uuid.UUID(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 # Gemini's schema subset has no `uuid` string format, so the model sees a plain nullable string.
 MediaRef = Annotated[
-    uuid.UUID | None, WithJsonSchema({"anyOf": [{"type": "string"}, {"type": "null"}]})
+    uuid.UUID | None,
+    BeforeValidator(_uuid_or_none),
+    WithJsonSchema({"anyOf": [{"type": "string"}, {"type": "null"}]}),
 ]
 
 

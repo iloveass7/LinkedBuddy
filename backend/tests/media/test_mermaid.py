@@ -2,6 +2,7 @@ import asyncio
 import http.server
 import os
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -305,6 +306,31 @@ async def test_render_makes_no_network_requests(template: str, private_tmp: Path
         server.shutdown()
         server.server_close()
     assert _Counter.hits == []
+
+
+async def test_timeout_does_not_leave_output_written_during_shutdown(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A renderer that writes its image from a SIGTERM handler must not leave it behind."""
+    fake = tmp_path / "mmdc"
+    fake.write_text(
+        f"#!{sys.executable}\nimport signal, sys, time\n"
+        "out = sys.argv[sys.argv.index('-o') + 1]\n"
+        "def on_term(*_):\n"
+        f"    open(out, 'wb').write({PNG!r})\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM, on_term)\n"
+        "time.sleep(60)\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setattr(mermaid, "RENDER_TIMEOUT_S", 1.0)
+    settings = _settings().model_copy(update={"mmdc_path": str(fake)})
+    out = tmp_path / "o.png"
+
+    with pytest.raises(RenderFailed, match="timed out"):
+        await render_mermaid(GOOD, out, settings)
+
+    assert not out.exists()
 
 
 # --- render_diagram job ------------------------------------------------------------------------

@@ -34,6 +34,7 @@ from linkedbuddy.llm.fake import FakeLLM
 from linkedbuddy.llm.provider import LLMInvalidOutput, LLMRateLimited, LLMUnavailable
 from linkedbuddy.main import create_app
 from linkedbuddy.media.router import MAX_MEDIA_PER_DRAFT
+from linkedbuddy.scheduler import tick
 from linkedbuddy.security.auth import create_session
 from linkedbuddy.settings.service import clear_settings_cache
 from linkedbuddy.video import brag as brag_module
@@ -56,6 +57,14 @@ FAKE_BRAG = textwrap.dedent(
         sys.exit(3)
     if mode == "sleep":
         import time
+        time.sleep(60)
+    if mode == "sigterm":
+        import signal, time
+        def on_term(*_):
+            with open(out, "wb") as f:
+                f.write({mp4!r})
+            os._exit(0)
+        signal.signal(signal.SIGTERM, on_term)
         time.sleep(60)
     if mode == "missing":
         sys.exit(0)
@@ -246,6 +255,20 @@ def test_script_drops_unknown_media_ids() -> None:
     assert cleaned.scenes[1].kind == "screenshot" and cleaned.scenes[1].text == "hello"
 
 
+@pytest.mark.parametrize("junk", ["", "diagram-1", "none", "null", "1234", " ", 7, [], {}])
+def test_malformed_media_id_becomes_none(junk: Any) -> None:
+    ok = uuid.uuid4()
+    parsed = Scene.model_validate(
+        {"kind": "diagram", "text": "t", "duration_s": 3, "media_id": junk}
+    )
+    assert parsed.media_id is None
+    again = Scene.model_validate(
+        {"kind": "diagram", "text": "t", "duration_s": 3, "media_id": str(ok)}
+    )
+    assert again.media_id == ok
+    assert Scene.model_validate({"kind": "text", "text": "t", "duration_s": 3}).media_id is None
+
+
 # --- prompts ----------------------------------------------------------------------------------
 
 
@@ -361,6 +384,15 @@ async def test_brag_timeout_raises_and_reaps(tmp_path: Path) -> None:
     # nothing carrying the fake script's path is left running
     needle = str(tmp_path / "fake_brag.py").encode()
     assert not _pids_mentioning(needle)
+
+
+async def test_brag_timeout_leaves_no_output_written_during_shutdown(tmp_path: Path) -> None:
+    """A renderer that writes its output from a SIGTERM handler must not leave it behind."""
+    command, _ = write_fake_brag(tmp_path, "sigterm")
+    out = tmp_path / "o.mp4"
+    with pytest.raises(RenderFailed, match="timed out"):
+        await BragRenderer(command, 1).render(three(), {}, out)
+    assert not out.exists()
 
 
 def test_brag_rejects_empty_command() -> None:
@@ -542,6 +574,22 @@ async def test_brag_timeout_marks_failed(
     assert media.status == "failed" and media.meta["reason"] == "rendering timed out"
     assert media.file_path is None
     assert not media_root.exists() or not list(media_root.iterdir())
+
+
+async def test_timeout_with_late_output_leaves_no_file(
+    db: AsyncSession, ctx: JobContext, tmp_path: Path, media_root: Path
+) -> None:
+    command, _ = write_fake_brag(tmp_path, "sigterm")
+    draft_id, _ = await seed_draft(db)
+    media_id = await seed_video(db, draft_id)
+    llm = FakeLLM({VideoScript: [three()]})
+    slow = with_settings(with_llm(ctx, llm), brag_command=command, video_timeout_s=1)
+
+    result = await render_video(slow, payload(draft_id, media_id))
+
+    assert result["reason"] == "rendering timed out"
+    assert (await load(db, media_id)).status == "failed"
+    assert not list(media_root.iterdir())
 
 
 async def test_non_mp4_output_marks_failed_and_removes_file(
@@ -770,3 +818,65 @@ def test_brag_command_line_is_built_only_in_brag_module() -> None:
     src_dir = Path(brag_module.__file__).parent.parent
     users = [p.name for p in src_dir.rglob("*.py") if "script.json" in p.read_text()]
     assert users == ["brag.py"]
+
+
+# --- interrupted-media sweep ------------------------------------------------------------------
+
+
+async def test_tick_fails_pending_media_without_a_live_job(
+    db: AsyncSession, settings: Settings
+) -> None:
+    draft_id, _ = await seed_draft(db)
+    orphan_video = await seed_video(db, draft_id)
+    queued_video = await seed_video(db, draft_id)
+    running_diagram = add_media(
+        db, draft_id, Path("/nonexistent"), type="diagram", status="pending", file_path=None
+    )
+    next_diagram = add_media(
+        db, draft_id, Path("/nonexistent"), type="diagram", status="pending", file_path=None
+    )
+    orphan_diagram = add_media(
+        db, draft_id, Path("/nonexistent"), type="diagram", status="pending", file_path=None
+    )
+    ready_diagram = add_media(
+        db, draft_id, Path("/nonexistent"), type="diagram", status="ready", file_path=None
+    )
+    done_video = await seed_video(db, draft_id)
+    ids = (running_diagram.id, next_diagram.id, orphan_diagram.id, ready_diagram.id)
+    db.add_all(
+        [
+            Job(kind=RENDER_VIDEO, status="queued", payload=payload(draft_id, queued_video)),
+            Job(kind=RENDER_VIDEO, status="done", payload=payload(draft_id, done_video)),
+            Job(
+                kind="render_diagram",
+                status="running",
+                payload={"media_id": str(ids[0])},
+                dedupe_key=f"diagram:{ids[0]}",
+            ),
+            Job(
+                kind="render_diagram",
+                status="queued",
+                payload={"media_id": str(ids[1])},
+                dedupe_key=f"diagram:{ids[1]}:next",
+            ),
+        ]
+    )
+    await db.commit()
+
+    report = await tick(db, datetime.now(UTC), settings=settings)
+
+    assert report.media_interrupted == 3  # orphan video, done video, orphan diagram
+    for media_id, expected in [
+        (orphan_video, "failed"),
+        (done_video, "failed"),
+        (ids[2], "failed"),
+        (queued_video, "pending"),
+        (ids[0], "pending"),
+        (ids[1], "pending"),
+        (ids[3], "ready"),
+    ]:
+        assert (await load(db, media_id)).status == expected
+    assert (await load(db, orphan_video)).meta["reason"] == "render interrupted"
+    assert (await load(db, queued_video)).meta == {}
+    again = await tick(db, datetime.now(UTC), settings=settings)
+    assert again.media_interrupted == 0

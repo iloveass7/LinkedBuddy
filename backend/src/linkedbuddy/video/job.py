@@ -2,8 +2,9 @@
 
 Opt-in only: the sole producer is `POST /api/drafts/{id}/video`. The DB is used in short sessions
 (never held across the Gemini call or the render). The Media row is `pending` from the request on
-and ends `ready` or `failed`, so it can never stay `pending` once the job is out of attempts
-(ARCHITECTURE.md 7.2). Prompts, scripts and model output are never logged.
+and ends `ready` or `failed`; if the worker dies mid-job, the scheduler's interrupted-media
+sweep fails it once no live job references it (ARCHITECTURE.md 7.2).
+Prompts, scripts and model output are never logged.
 """
 
 import uuid
@@ -153,6 +154,7 @@ async def render_video(ctx: JobContext, payload: dict[str, Any]) -> dict[str, An
                 script, assets, media_path(new_name, root)
             )
         except RenderFailed as exc:
+            _remove(new_name, root)
             new_name = None
             await _finish(ctx, media_id, reason=str(exc))
             return {"status": "failed", "reason": str(exc)}

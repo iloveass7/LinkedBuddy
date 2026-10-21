@@ -148,6 +148,7 @@ async def render_mermaid(src: str, out: Path, settings: Settings | None = None) 
         settings = get_settings()
     work = Path(tempfile.mkdtemp(prefix="lb-mmdc-"))  # mode 0700
     proc: asyncio.subprocess.Process | None = None
+    ok = False
     try:
         in_file = work / "diagram.mmd"
         in_file.write_text(src, encoding="utf-8")
@@ -182,16 +183,18 @@ async def render_mermaid(src: str, out: Path, settings: Settings | None = None) 
         with out.open("rb") as f:
             if f.read(len(PNG_MAGIC)) != PNG_MAGIC:
                 raise RenderFailed("renderer produced no image")
+        ok = True
     except FileNotFoundError as exc:
-        await asyncio.to_thread(out.unlink, missing_ok=True)
         raise RenderFailed("renderer produced no image") from exc
-    except RenderFailed:
-        await asyncio.to_thread(out.unlink, missing_ok=True)
-        raise
     finally:
-        if proc is not None:
-            await reap(proc, work)
-        shutil.rmtree(work, ignore_errors=True)
+        # Reap first, then delete: a renderer may write its output while it is being stopped.
+        try:
+            if proc is not None:
+                await reap(proc, work)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+            if not ok:
+                out.unlink(missing_ok=True)  # noqa: ASYNC240 - sync: must run even if cancelled
 
 
 def source_hash(src: str) -> str:

@@ -1,14 +1,18 @@
 """Application settings. The only place environment variables are read."""
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 _REPO_ROOT = _BACKEND_DIR.parent
+
+# scheme://host[:port] only: no wildcard, userinfo, path, query or fragment.
+_ORIGIN_RE = re.compile(r"https?://[A-Za-z0-9.-]+(:\d{1,5})?")
 
 
 class Settings(BaseSettings):
@@ -36,6 +40,15 @@ class Settings(BaseSettings):
     brag_command: list[str] | None = None
     video_timeout_s: int = 600
     allow_public_bind: bool = False
+
+    @field_validator("frontend_origins")
+    @classmethod
+    def _origins_are_exact(cls, origins: list[str]) -> list[str]:
+        # With allow_credentials=True a "*" would make CORS echo any Origin (SECURITY.md 3.2).
+        for origin in origins:
+            if not _ORIGIN_RE.fullmatch(origin):
+                raise ValueError("frontend_origins must be http(s)://host[:port] with no path")
+        return origins
 
 
 @lru_cache

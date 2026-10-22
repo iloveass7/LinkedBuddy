@@ -1,0 +1,107 @@
+# LinkedBuddy backend — rulings and deferred minors
+
+Decisions made during execution of docs/superpowers/plans/2026-10-21-linkedbuddy-backend.md, and review findings deliberately deferred.
+
+## Rulings
+
+- - Ruling: work on branch feat/backend in place, no worktree — fresh repo, nothing else checked out — cost if wrong: none.
+- - Ruling: package renamed repopost → linkedbuddy, cookie lb_session, CSRF header X-Requested-With: linkedbuddy — owner named the project LinkedBuddy — cost if wrong: a rename.
+- - Ruling: Supabase replaces Docker Postgres (owner instruction); tests on a 2nd Supabase project via TEST_DATABASE_URL; plan + DATABASE.md + ARCHITECTURE.md updated before execution — cost if wrong: test suite slower (network).
+- - Ruling: latency budgets became round-trip-count budgets (T9 test_inbox_single_query) — wall-clock budgets are meaningless against a remote DB — cost if wrong: perf regressions in-process are not caught.
+- Rulings:
+- - R1 Ruling: execution order 1,4,5,6,10 first (no DB), then 2,3,7,8,9,11..17 — TEST_DATABASE_URL not yet available — cost if wrong: none (these tasks don't share files except main.py lifespan, appended in order).
+- - R2 Ruling: JobContext drops `github`; T8 adds `async get_github_client(db, http, settings) -> GitHubClient` and handlers call it — token lives in DB — cost if wrong: small signature change.
+- - R3 Ruling: worker stores `{**handler_result, "duration_ms": int}` in `jobs.result`; test asserts `result["ok"] is True and "duration_ms" in result` — cost if wrong: none.
+- - R4 Ruling: no worker failure hook; `generate_draft` wraps its body in try/except, restores prior status on any exception, then re-raises — cost if wrong: duplicated restore logic if more handlers need it later.
+- - R5 Ruling: T10 wires GeminiProvider into main.py lifespan only and exposes `make_llm(settings) -> LLMProvider`; T7 worker calls `make_llm` — cost if wrong: none.
+- - R6 Ruling: queue/worker tests use their own committed sessions from the `engine` fixture and TRUNCATE `jobs` in teardown — SKIP LOCKED needs real concurrent transactions — cost if wrong: none.
+- - R7 Ruling: brag adapter built to the plan's command contract (`brag_command + [script.json, out.mp4]`); owner installs brag and adjusts `BRAG_COMMAND` or `BragRenderer` — cost if wrong: one small adapter edit.
+- Ruling R8: subagent commits carry their own model's Co-Authored-By trailer (Sonnet/Haiku), not Opus — attribution should name the model that wrote the commit — cost if wrong: cosmetic
+- Ruling R9: StrEnums RepoMode/EventType live in linkedbuddy/enums.py (created T6); T2 db/models.py imports them and adds the rest there — T6 ran before T2 per R1 — cost if wrong: none
+- Task 2: Ruling: posts.draft_id ON DELETE CASCADE — owner deleting a repo means delete its history; matches decisions (also "kept indefinitely" yet cascades with event); §9 retention applies to automatic purges — cost if wrong: deleting a repo also deletes its post history/metrics
+- Task 2: Ruling: test-DB guard gaps (direct host vs pooler, same db different role) re-graded Minor→Important — effect is `downgrade base` wiping the real DB — cost if wrong: one extra fix item
+- Task 2: Ruling: no RED run accepted for schema tests; vacuous-pass risk closed by forcing a RED on the lockdown test — cost if wrong: none
+- Task 2: Ruling: guard treats one-ref-vs-no-ref URLs as different (implementer deviation) — Supabase pooler rejects ref-less users and direct host carries the ref — cost if wrong: a tunnel/custom-domain URL to the real project could pass the guard
+- Task 3: Ruling: FRONTEND_ORIGINS wildcard re-graded Minor→Important — with credentials it echoes any Origin and voids CSRF — cost if wrong: one validator
+- Task 3: Ruling: github_connected = connections row OR non-blank env GITHUB_TOKEN — T8 falls back to settings.github_token so env token is a working connection — cost if wrong: /me flag semantics
+- Task 3: Ruling: §2.1 bind/ALLOW_PUBLIC_BIND gate owned by T17 (dev.sh + a startup check) — cost if wrong: none
+- Ruling R10: implementers must run commands in the foreground and leave nothing running — background test runs from finished agents overlapped later tasks on the shared test DB — cost if wrong: none
+- Task 7: Ruling: stale-lock window 10 min except render_video = video_timeout_s + 300 s, compared with DB now() — §8's flat 10 min equals VIDEO_TIMEOUT_S so live renders would be reclaimed — cost if wrong: a crashed video job waits 15 min before retry
+- Task 7: Ruling: non-dict handler result and DBAPIError param leakage into jobs.error re-graded to Important — stuck jobs / content exposed via GET /api/jobs — cost if wrong: two small fixes
+- Task 7: Ruling (carried to T8): poll_repo sets repos.last_polled_at at handler start, so a failing repo isn't re-enqueued every 60 s tick — cost if wrong: none
+- Task 7: Ruling (carried to T13): scheduler tick also resets events stuck in 'generating' with no queued/running generate_draft job (covers stale-lock→failed with no handler cleanup) — cost if wrong: none
+- Task 8: Ruling: polling is sha-based — list first page without `since` (stable URL + ETag), cut at last_seen_sha, fall back to compare(); deviates from ARCHITECTURE §6 `since=<last_polled_at>` because GitHub `since` filters committer date and drops late-pushed commits (also fixes the skip caused by stamping last_polled_at at start) — cost if wrong: one extra compare call when >100 new commits
+- Task 8: Ruling: release check runs even on 304 — releases are the highest-value events — cost if wrong: +1 GET per repo per poll
+- Task 8: Ruling: GET /api/repos unpaginated, capped at 500 — single owner — cost if wrong: none at personal scale
+- Task 8: Ruling: app-wide RequestValidationError handler strips `input`/`ctx` — misnamed-key 422 echoed the GitHub token — cost if wrong: less detailed 422s
+- Task 8: Ruling: >100 new commits keeps newest 100 from listing page (implementer deviation; compare's first page is oldest 100) — matches §6 "keep newest" — cost if wrong: none
+- Task 9: Ruling (carried to T13): generate_draft only moves event to `drafted` if status is still `generating` (owner may dismiss mid-generation) — cost if wrong: none
+- Task 11: Ruling: email redaction never blocks private repos, and prev_post (owner's own text) never blocks — redacted only; block only on secret kinds in repo-sourced evidence — SECURITY §6.6 literal reading would block nearly every private repo via Co-authored-by trailers — cost if wrong: a private repo's emails (already redacted) reach Gemini as [REDACTED:email]
+- Task 11: Ruling: stats truncate-before-redact re-graded Minor→Important (partial secret leak) — cost if wrong: none
+- Task 13: Ruling: generation transitions status only from new/suggested/drafted; dismissed/posted keep status (drafts still inserted); generate route un-dismisses (→ suggested) since owner explicitly asked — cost if wrong: dismissed events re-enter inbox on explicit generate
+- Task 13: Ruling: video-script prompt deferred to Task 15 (brief listed it in T13) — T15 owns video — cost if wrong: none
+- Task 13: Ruling: quick-edit privacy guard test and unterminated-tag delimiter gap re-graded Minor→Important (privacy/injection) — cost if wrong: none
+- Task 14: Ruling: Puppeteer config generated per render in the private temp dir with --proxy-server=127.0.0.1:9 (blocks all render-time network), plus check_mermaid rejects <img/src=/url(/@import/%%{/http:/https:/frontmatter — LLM-authored diagrams are attacker-influenced (repo prompt injection) — cost if wrong: some legitimate diagrams using init directives are rejected
+- Task 14: Ruling: render_diagram stuck-pending and file leaks re-graded to Important (ARCHITECTURE §7.2) — cost if wrong: none
+- Task 15: Ruling: pending-forever media (worker death on last attempt) re-graded Minor→Important; scheduler sweep fails pending diagram/video media with no live job (>2 min old) — ARCHITECTURE §7.2 + 20-item cap — cost if wrong: none
+- Task 15: Ruling: no 2-min grace in media sweep (media has no created_at); safe because media insert + enqueue share one transaction everywhere — cost if wrong: a pending row created outside a job transaction would be failed early
+- Task 16: Ruling: posts list default 20 / max 100 (differs from DATABASE §7.1's 50/200) — per-repo post history is short, smaller pages — cost if wrong: frontend asks for more pages
+- Task 17: Ruling: Server-Timing middleware (ARCHITECTURE §5.5, unowned by any task) added in T17 fix round — spec requires it — cost if wrong: none
+- Task 17: Ruling: raw `uvicorn --host 0.0.0.0` bypasses the bind gate; accepted and documented (app can't see its bind address; uvicorn default is loopback) — cost if wrong: owner can expose the API by bypassing serve.py
+- Ruling: local main moved e626a66→ef5fae5 (identical tree; e626a66 was the pre-amend copy of my own first commit with the wrong author) so the branch has a merge base — cost if wrong: none, no remote
+- Final: Ruling: final-review fix pass = Important 1-4 + deferred-minor FK indexes (must land before first real migration) + serve public-bind-in-dev re-graded Important (security) — cost if wrong: none
+
+## Deferred minors
+
+- Task 1: minor (deferred): main.py module __getattr__ builds a new app per access (not a singleton) — consider lru_cache or uvicorn --factory
+- Task 1: minor (deferred): scripts/dev.sh calls bare `uv` which may not be on PATH
+- Task 1: minor (deferred): backend/README.md empty (T14/T17 fill it)
+- Task 4: minor (deferred): env_secret only handles `=` (YAML `password: x`, JSON, `apikey=` unredacted); escaped quotes leak tail; MAX_TOKENS=4096 over-redacted
+- Task 4: minor (deferred): no tests for gho_/ASIA/negative boundaries/export prefix; no-op noqa N818
+- Task 4: minor (deferred): env_secret misses `===`/`!=` comparisons and JSON `"password": "x"` (pre-existing, same class)
+- Task 5: minor (deferred): GitHub token attached to any allowlisted host incl. Link-header next URLs — pin token to api.github.com (security hardening; final review should weigh)
+- Task 5: minor (deferred): list_repos 50-page cap silent; `..` check rejects legit names / allows `o/.`; 301 on renamed repos surfaces as HTTPStatusError; get_tree drops submodules and ignores truncated; get_commit first page of files only (T8 must respect 300-file cap)
+- Task 6: minor (deferred): ignore dirs (dist/build/.next/node_modules) match at any depth — src/build/*.py counted as noise; case-sensitive .md; passes_mode not exhaustive for mypy; EventSignals frozen with list
+- Task 10: minor (deferred): TokenBucket starts full at capacity=rpm → up to ~2×rpm in a 60s window (429 path catches it); consider capacity max(1, rpm//5)
+- Task 10: minor (deferred): non-429 ClientError / 5xx ServerError propagate as raw SDK exceptions — wrap in LLMError subclass so callers don't import google.genai
+- Task 10: minor (deferred): genai client never closed on shutdown; validation retry spends a second bucket token
+- Task 2: minor (deferred): slow-query logger (§7.7) unassigned — fold into T17 wiring
+- Task 2: minor (deferred): health check swallows DB error without logging; 503 path untested
+- Task 2: minor (deferred): _jsonb ignored default for nullable columns; roundtrip test asserts nothing after re-upgrade
+- Task 2: minor (deferred): unindexed FKs decisions.event_id, commits.event_id, drafts.parent_draft_id, drafts.series_id, series.repo_id
+- Task 2: minor (deferred): _supabase_ref case-sensitive, trailing-dot host not normalized
+- Task 3: minor (deferred): no RED run recorded (process)
+- Task 3: minor (deferred): CORS preflight/500 responses lack security headers (CORS outside SecurityMiddleware)
+- Task 3: minor (deferred): CSP exemption bare startswith("/docs","/redoc") in prod too
+- Task 3: minor (deferred): limiter _failures unbounded across many IPs; keys on client.host (proxy shares key)
+- Task 3: minor (deferred): argon2 verify sync on loop — keep limiter atomic if moved to threadpool; _nonblank getattr idiom; type: ignore on cookie flags
+- Task 3: minor (deferred): tests missing: successful login resets counter; sliding window; headers on CSRF 403
+- Task 3: minor (deferred): origin validator rejects IPv6 literals; route-guard docs allowlist is path-only (a Mount at /docs would pass)
+- Task 7: minor (deferred): _listen catches only OSError/PostgresError and runs before try (InterfaceError crashes worker); no LISTEN reconnect
+- Task 7: minor (deferred): shutdown-cancelled job keeps its spent attempt; drain/concurrency/outcome-failure paths untested; backoff test compares DB now() with local clock
+- Task 7: minor (deferred): Postgres may still quote offending scalar in jobs.error; complete() DB error re-runs side-effecting handler; stale tests use Python clock vs DB now()
+- Task 8: minor (deferred): POST /repos/{id}/poll race can 404 if job finishes between conflict and select; 3-4 round trips
+- Task 8: minor (deferred): first push to a previously-empty old repo is swallowed (treated as first poll)
+- Task 8: minor (deferred): event stats files/additions/deletions include lockfile lines (inbox overstates noise)
+- Task 8: minor (deferred): no test for public→private re-opt-out on resync; positional EventSignals calls; get_github_client lives in ingest.py; handlers↔ingest import cycle
+- Task 8: minor (deferred): test_poll_caps_100_commits doesn't pin newest-100; stale "(since filter)" comment; truncated=true at exactly 100
+- Task 9: minor (deferred): tampered cursor with extreme tz offset can 500 (OverflowError after guard); InboxItem/InboxRow duplicate fields; CASE rank can't use index for dismissed/posted lists; tests lack cursor+non-default status
+- Task 11: minor (deferred): cache hit skips private-block check (visibility not in hash) — policy bypass only, stored text already redacted
+- Task 11: minor (deferred): full mode issues up to 13 concurrent GitHub calls without Semaphore(8); gather leaves siblings running on error
+- Task 11: minor (deferred): table detection only `|`-leading lines; prose past 150 starting with `|` bypasses line cap
+- Task 11: minor (deferred): no tests for 40-line patch cap, patch redaction, release ordering, _fit ValueError
+- Task 11: minor (deferred): description/languages/topics always empty (not stored on repo row)
+- Task 11: minor (deferred): CONTEXT_VERSION still "1" after render format change — bump before real cache exists; delimiter regex [^>]* spans newlines; NFKC alters compat chars
+- Task 12: minor (deferred): GitHubRateLimited from build_context not converted to Defer (spends attempts) — T13 handles it in generate_draft; rate.py still needs it
+- Task 12: minor (deferred): get_github_client runs before privacy check (GitHubNotConfigured instead of privacy skip); LookupError race unhandled; prompt doesn't state 300-char/5-item limits; no RED run
+- Task 13: minor (deferred): regenerate requires GitHub token even with cached context; PATCH body leaves segments/unsupported_claims stale; concurrent generate+regenerate can leave wrong status; no negative idempotency test
+- Task 13: minor (deferred): un-dismiss happens even when generate dedupes onto live job and isn't logged; unterminated-tag strip drops rest of line; prior-status read/update not row-locked
+- Task 14: minor (deferred): 20-item cap / position read without lock; multipart body spooled before auth (needs Content-Length cap if ALLOW_PUBLIC_BIND); warnings.catch_warnings not thread-safe in to_thread; path heuristic false positives (Node.js, CI/CD), edge labels unchecked; no RED for mermaid/router tests
+- Task 14: minor (deferred): cancel after _store commit can unlink a ready file (self-heals on retry); _reap not shielded from second cancel; check_mermaid literal patterns (proxy is the real control); labels with http:/https:/// rejected; malformed puppeteer config → generic failure; /proc (Linux-only) undocumented; multipart spooled before auth
+- Task 15: minor (deferred): escaping media_path → retries instead of drop; scene kind not checked vs media type; draft body/alt_text sent to Gemini unredacted (same as quick-edit — project-level decision); video/router imports media/router._live_job; brag stderr discarded; worker retries after media marked failed (UI flicker); no RED run
+- Task 16: minor (deferred): crafted cursor extreme date may 500; publish 409/422 tests don't assert statuses unchanged; dismissed→posted untested; 409 path holds locks until session close
+- Task 17: minor (deferred): e2e has no marker and a killed run leaves residue (fails loudly next run); dev.sh needs bash ≥4.3, kill 0 hits parent group, HOST var name fragile; NOTIFY-proof timing not asserted against FALLBACK_POLL_S; test_db_errors_hide_parameters uses invalid :v::text; transient DBAPIError in test_posts uninvestigated
+- Task 17: minor (deferred): 500s lack Server-Timing; db time excludes pool/commit; test_logout_deletes_session asserts whole sessions table (shared-DB flake)
+- Final: minor (deferred): force-push via compare "diverged" keeps orphaned base_sha; `generating` events hidden from inbox; generating sweep sends former `new` to `suggested`; quick-edit/diagram path checks fail after 7-day context purge (409 should say "regenerate first"); PATCH discard logs no `discard` decision; os.environ read in media/subproc.py & mermaid.py (PUPPETEER_* passthrough) vs SECURITY 1.2; deleted/renamed GitHub repos keep failing poll; health lacks queue depth, logs not JSON (ARCH §9)
+- Final: minor (deferred): Task 13 PATCH body leaves segments stale — reviewer: fix soon (feeds quick-edit contradictory input)
+- Final: minor (deferred): manual-range and poll-gap compare return the OLDEST 100 commits on >100-commit ranges (compare per_page=100, chronological) — head may be omitted; test mocks a 120-item page

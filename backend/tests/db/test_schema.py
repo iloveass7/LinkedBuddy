@@ -1,8 +1,12 @@
 import asyncio
+from typing import Any
 
 import pytest
 from alembic import command
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
 from sqlalchemy import delete, func, text
+from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import selectinload
@@ -193,6 +197,28 @@ def test_conftest_guard_rejects(test_url: str | None, real_url: str) -> None:
 def test_make_engine_rejects_transaction_pooler() -> None:
     with pytest.raises(ValueError):
         make_engine("postgresql+asyncpg://u:p@test.example.com:6543/postgres")
+
+
+def test_every_foreign_key_is_indexed() -> None:
+    """DATABASE.md 7.4: an FK column without an index makes parent deletes and joins scan."""
+    missing = []
+    for table in Base.metadata.sorted_tables:
+        leading = {idx.columns.values()[0].name for idx in table.indexes}
+        leading.add(table.primary_key.columns.values()[0].name)
+        for fk in table.foreign_key_constraints:
+            if fk.columns.values()[0].name not in leading:
+                missing.append(f"{table.name}.{fk.columns.values()[0].name}")
+    assert missing == []
+
+
+async def test_database_matches_models(engine: AsyncEngine) -> None:
+    """The migrated schema has every index and column the models declare (no autogenerate diff)."""
+
+    def diff(conn: Connection) -> list[Any]:
+        return compare_metadata(MigrationContext.configure(conn), Base.metadata)
+
+    async with engine.connect() as conn:
+        assert await conn.run_sync(diff) == []
 
 
 async def test_migration_roundtrip(engine: AsyncEngine, test_database_url: str) -> None:

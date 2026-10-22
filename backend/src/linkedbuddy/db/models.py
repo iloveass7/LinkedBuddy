@@ -248,6 +248,7 @@ class Commit(Base):
     __table_args__ = (
         ForeignKeyConstraint(["repo_id"], ["repos.id"], ondelete="CASCADE"),
         ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="SET NULL"),
+        Index("ix_commits_event_id", "event_id"),
     )
 
     repo_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
@@ -266,6 +267,7 @@ class Commit(Base):
 
 class Series(Base):
     __tablename__ = "series"
+    __table_args__ = (Index("ix_series_repo_id", "repo_id"),)
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     repo_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("repos.id", ondelete="SET NULL"))
@@ -281,6 +283,8 @@ class Draft(Base):
         _in_check("tone", Tone, "tone"),
         _in_check("status", DraftStatus, "status"),
         Index("ix_drafts_event_id_created_at", "event_id", text("created_at DESC")),
+        Index("ix_drafts_parent_draft_id", "parent_draft_id"),
+        Index("ix_drafts_series_id", "series_id"),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -371,6 +375,7 @@ class Decision(Base):
     __table_args__ = (
         _in_check("action", DecisionAction, "action"),
         _in_check("rating_at_time", Rating, "rating_at_time"),
+        Index("ix_decisions_event_id", "event_id"),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()

@@ -65,6 +65,7 @@ repos         id, github_repo_id bigint UNIQUE, full_name, visibility CHECK(publ
               ix: (mode) WHERE mode <> 'muted'
 commits       (repo_id, sha) PK, event_id FK NULL SET NULL, classification text, meaningful_lines int,
               author_login, message, files jsonb, committed_at
+              ix: (event_id)
 events        id, repo_id FK CASCADE, type CHECK(new_repo|release|pr_merged|push_group|manual|labeled),
               base_sha NULL, head_sha NULL, dedupe_key text UNIQUE,
               stats jsonb, heuristic_score real, rating CHECK(high|medium|low) NULL, rating_reason, rating_json jsonb,
@@ -73,12 +74,14 @@ events        id, repo_id FK CASCADE, type CHECK(new_repo|release|pr_merged|push
               created_at, updated_at
               ix: (status, rating, created_at DESC)   -- inbox query
               ix: (repo_id, created_at DESC)
-series        id, repo_id FK NULL, title
+series        id, repo_id FK NULL, title                                     ix: (repo_id)
 drafts        id, event_id FK CASCADE, parent_draft_id FK NULL, series_id FK NULL,
               variant_index int, angle text, tone, instructions_used, body text, segments jsonb, alt_openings jsonb,
               first_comment text NULL, specificity_count int, unsupported_claims int, lint jsonb,
               model, prompt_version, status CHECK(draft|approved|discarded|posted) DEFAULT 'draft', created_at
               ix: (event_id, created_at DESC)
+              ix: (parent_draft_id)
+              ix: (series_id)
 media         id, draft_id FK CASCADE, type CHECK(screenshot|diagram|chart|pdf|video),
               source CHECK(uploaded|generated|repo), file_path text NULL, mime text NULL,
               mermaid_source NULL, alt_text NULL, position int, included bool, status CHECK(pending|ready|failed), meta jsonb
@@ -88,6 +91,7 @@ posts         id, draft_id FK, posted_at, publish_method CHECK(manual|api), link
               ix: (draft_id)
 decisions     id, event_id FK CASCADE, action CHECK(generate|ignore|post|discard),
               rating_at_time, heuristic_at_time, decided_at
+              ix: (event_id)
 jobs          id, kind text, payload jsonb, status CHECK(queued|running|done|failed) DEFAULT 'queued',
               dedupe_key text NULL, attempts int DEFAULT 0, max_attempts int DEFAULT 3,
               run_after timestamptz DEFAULT now(), locked_at NULL, error text NULL, result jsonb NULL,

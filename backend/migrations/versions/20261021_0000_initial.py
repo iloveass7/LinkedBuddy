@@ -216,6 +216,7 @@ def upgrade() -> None:
             ["event_id"], ["events.id"], name="fk_commits_event_id_events", ondelete="SET NULL"
         ),
     )
+    op.create_index("ix_commits_event_id", "commits", ["event_id"])
 
     op.create_table(
         "series",
@@ -227,6 +228,7 @@ def upgrade() -> None:
             ["repo_id"], ["repos.id"], name="fk_series_repo_id_repos", ondelete="SET NULL"
         ),
     )
+    op.create_index("ix_series_repo_id", "series", ["repo_id"])
 
     op.create_table(
         "drafts",
@@ -273,6 +275,8 @@ def upgrade() -> None:
     op.create_index(
         "ix_drafts_event_id_created_at", "drafts", ["event_id", sa.text("created_at DESC")]
     )
+    op.create_index("ix_drafts_parent_draft_id", "drafts", ["parent_draft_id"])
+    op.create_index("ix_drafts_series_id", "drafts", ["series_id"])
 
     op.create_table(
         "media",
@@ -338,6 +342,7 @@ def upgrade() -> None:
             _in("rating_at_time", "high", "medium", "low"), name="ck_decisions_rating_at_time"
         ),
     )
+    op.create_index("ix_decisions_event_id", "decisions", ["event_id"])
 
     op.create_table(
         "jobs",

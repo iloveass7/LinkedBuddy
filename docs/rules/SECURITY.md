@@ -18,7 +18,7 @@
 
 ## 2. Authentication and sessions (single owner)
 
-1. **The server binds to `127.0.0.1` by default.** Binding to `0.0.0.0` requires `ALLOW_PUBLIC_BIND=true` and HTTPS in front. The gate is enforced by `python -m linkedbuddy.serve` (used by `scripts/dev.sh`); running `uvicorn` directly bypasses it, though uvicorn's own default host is also `127.0.0.1`.
+1. **The server binds to `127.0.0.1` by default.** Binding to `0.0.0.0` requires `ALLOW_PUBLIC_BIND=true` **and** `APP_ENV=prod` (so `/docs` is off, cookies are `Secure` and HSTS is sent), plus HTTPS in front. The gate is enforced by `python -m linkedbuddy.serve` (used by `scripts/dev.sh`); running `uvicorn` directly bypasses it, though uvicorn's own default host is also `127.0.0.1`.
 2. **Login checks one owner password** against an argon2id hash in `OWNER_PASSWORD_HASH` (`argon2-cffi`). The plaintext password is never stored.
 3. **Sessions are server-side.** On login, generate a 32-byte token with `secrets.token_urlsafe(32)`. Store only its SHA-256 hash in the `sessions` table with `expires_at` (14 days). The cookie `lb_session` is `HttpOnly`, `SameSite=Strict`, `Path=/`, and `Secure` whenever `APP_ENV != "dev"`.
 4. **Every route requires a session** except `GET /api/health` and `POST /api/auth/login`. Enforce this with a router-level dependency (`Depends(require_owner)`), not per-endpoint calls. A test walks `app.routes` and fails if any route other than those two lacks the dependency.

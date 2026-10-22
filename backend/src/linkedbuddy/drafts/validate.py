@@ -7,7 +7,7 @@ evidence, or with any unknown id, is marked unsupported and the UI flags it.
 from dataclasses import dataclass
 from typing import Annotated, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 MAX_SEGMENTS = 30
 MAX_ALT_OPENINGS = 3
@@ -32,9 +32,18 @@ class Variant(BaseModel):
 
 
 class DraftResult(BaseModel):
-    variants: Annotated[list[Variant], Field(min_length=MIN_VARIANTS, max_length=MAX_VARIANTS)]
+    # No min/max_length here: Gemini rejects the request (400 INVALID_ARGUMENT) when this array
+    # of objects carries minItems/maxItems. The count is checked below, after the model answers.
+    variants: list[Variant]
     diagram_mermaid: str | None = None
     alt_text_diagram: Annotated[str | None, Field(max_length=1000)] = None
+
+    @field_validator("variants")
+    @classmethod
+    def _variant_count(cls, value: list[Variant]) -> list[Variant]:
+        if not MIN_VARIANTS <= len(value) <= MAX_VARIANTS:
+            raise ValueError(f"expected {MIN_VARIANTS}-{MAX_VARIANTS} variants, got {len(value)}")
+        return value
 
 
 @dataclass(frozen=True)

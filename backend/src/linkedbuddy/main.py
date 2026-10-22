@@ -26,6 +26,7 @@ from linkedbuddy.repos import router as repos_router
 from linkedbuddy.security.auth import LoginRateLimiter, require_owner
 from linkedbuddy.security.middleware import SecurityMiddleware
 from linkedbuddy.settings import router as settings_router
+from linkedbuddy.timing import ServerTimingMiddleware
 from linkedbuddy.video import router as video_router
 
 
@@ -72,7 +73,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.state.login_limiter = LoginRateLimiter()
 
-    # Added last = outermost: CORS answers preflights, then the CSRF check and headers wrap the app.
+    # Added later = further out: CORS answers preflights, then CSRF check and headers wrap the app.
     app.add_middleware(SecurityMiddleware, hsts=not dev)
     app.add_middleware(
         CORSMiddleware,
@@ -81,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["Content-Type", "X-Requested-With"],
     )
+    app.add_middleware(ServerTimingMiddleware)  # outermost: times every response, CORS included
 
     public = APIRouter(prefix="/api")  # health and login only (see PUBLIC_ROUTES)
     api = APIRouter(prefix="/api", dependencies=[Depends(require_owner)])  # every other router

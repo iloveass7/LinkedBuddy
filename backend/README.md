@@ -85,8 +85,8 @@ the owner present:
 9. Optional: approve one draft (`PATCH /api/drafts/{id}` with `{"status": "approved"}`) and
    record a manual publish (`POST /api/drafts/{id}/publish` with `{"final_text": "...",
    "method": "manual"}`); the event becomes `posted`. Nothing is sent to LinkedIn.
-10. Check `GET /api/inbox` response headers for `Server-Timing` (ARCHITECTURE.md 5.5). Note:
-    that middleware is not implemented yet, so the header is expected to be missing for now.
+10. Check `GET /api/inbox` response headers: `Server-Timing: app;dur=<ms>, db;dur=<ms>`
+    (ARCHITECTURE.md 5.5). A `db` share close to `app` means the time goes to the network.
 11. Ctrl-C and confirm no `linkedbuddy` processes are left (`pgrep -fa linkedbuddy`).
 
 ## Diagram rendering (mermaid-cli)

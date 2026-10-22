@@ -21,7 +21,7 @@
 ## 2. Process layout
 
 ```
-uvicorn linkedbuddy.main:app        # API: HTTP only, never renders or calls Gemini in bulk
+python -m linkedbuddy.serve        # API (uvicorn, bind gate): HTTP only, never renders or calls Gemini in bulk
 python -m linkedbuddy.worker        # kinds: poll_repo, rate_event, generate_draft, render_diagram  (concurrency 4)
 python -m linkedbuddy.worker --kinds render_video --concurrency 1   # heavy, isolated
 python -m linkedbuddy.scheduler     # enqueues polls, reclaims stale jobs, purges retention

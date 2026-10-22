@@ -3,6 +3,7 @@
 import logging
 import time
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from typing import Any
 
 from fastapi import Request
@@ -31,7 +32,8 @@ def reject_transaction_pooler(url: str) -> None:
 def make_engine(url: str, *, slow_query_ms: int | None = None) -> AsyncEngine:
     """Build the process-wide engine. Refuses the Supabase transaction pooler (port 6543).
 
-    With `slow_query_ms`, statements slower than that are logged (see `log_slow_queries`).
+    Statement time always counts towards the current request's `DbTime` (Server-Timing). With
+    `slow_query_ms`, statements slower than that are also logged (see `_time_statements`).
     """
     reject_transaction_pooler(url)
     engine = create_async_engine(
@@ -44,8 +46,7 @@ def make_engine(url: str, *, slow_query_ms: int | None = None) -> AsyncEngine:
         # logs and jobs.error (SECURITY.md 7).
         hide_parameters=True,
     )
-    if slow_query_ms is not None:
-        log_slow_queries(engine, slow_query_ms)
+    _time_statements(engine, slow_query_ms)
     return engine
 
 
@@ -55,8 +56,23 @@ def engine_for(settings: Settings) -> AsyncEngine:
     return make_engine(settings.database_url, slow_query_ms=slow)
 
 
-def log_slow_queries(engine: AsyncEngine, threshold_ms: int) -> None:
-    """Warn about statements over `threshold_ms`: duration and the first 80 characters of the SQL.
+class DbTime:
+    """Milliseconds of DB statements run while this object is `current_db_time`."""
+
+    __slots__ = ("ms",)
+
+    def __init__(self) -> None:
+        self.ms = 0.0
+
+
+# Set per request by the timing middleware. The hooks add to the object rather than set the
+# variable, so time spent in SQLAlchemy's greenlets (which copy the context) is not lost.
+current_db_time: ContextVar[DbTime | None] = ContextVar("current_db_time", default=None)
+
+
+def _time_statements(engine: AsyncEngine, slow_query_ms: int | None) -> None:
+    """Add each statement's time to `current_db_time`; with `slow_query_ms`, warn about slower
+    statements with their duration and the first 80 characters of the SQL.
 
     Never the parameters (they carry README text, post bodies and tokens). The time includes the
     network round trip, which alone is ~100-400 ms to a remote Supabase; raise SLOW_QUERY_MS then.
@@ -73,7 +89,9 @@ def log_slow_queries(engine: AsyncEngine, threshold_ms: int) -> None:
         if started is None:
             return
         elapsed_ms = (time.perf_counter() - started) * 1000
-        if elapsed_ms > threshold_ms:
+        if (tracker := current_db_time.get()) is not None:
+            tracker.ms += elapsed_ms
+        if slow_query_ms is not None and elapsed_ms > slow_query_ms:
             text = " ".join(statement.split())[:SLOW_QUERY_TEXT_CHARS]
             log.warning("slow query %.0f ms: %s", elapsed_ms, text)
 

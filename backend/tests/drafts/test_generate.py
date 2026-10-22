@@ -5,6 +5,7 @@ import random
 import re
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -73,7 +74,7 @@ async def ctx(db: AsyncSession, gh_settings: Settings) -> AsyncIterator[JobConte
 
 
 def with_llm(ctx: JobContext, llm: Any) -> JobContext:
-    return JobContext(ctx.sessionmaker, ctx.http, llm, ctx.settings)
+    return replace(ctx, llm=llm)
 
 
 class Api:
@@ -350,6 +351,25 @@ async def test_generate_429_restores_status(ctx: JobContext, db: AsyncSession) -
     assert before + timedelta(seconds=19) <= info.value.until <= before + timedelta(seconds=40)
     assert await event_status(db, event_id) == "suggested"
     assert await drafts_of(db, event_id) == []
+
+
+@respx.mock
+async def test_generate_429_backs_off_longer_each_deferral(
+    ctx: JobContext, db: AsyncSession
+) -> None:
+    mock_github()
+    event_id = await seed_event(db, status="suggested")
+    waits = []
+    for deferrals in (1, 2):
+        fake = FakeLLM({DraftResult: [LLMRateLimited(1)]})
+        before = datetime.now(UTC)
+        with pytest.raises(Defer) as info:
+            await run(replace(ctx, deferrals=deferrals), fake, event_id)
+        # The wait chosen at raise time lies between these two bounds.
+        waits.append((info.value.until - datetime.now(UTC), info.value.until - before))
+
+    assert waits[0][0] <= timedelta(seconds=20) <= waits[0][1]
+    assert waits[1][0] <= timedelta(seconds=40) <= waits[1][1]
 
 
 @respx.mock

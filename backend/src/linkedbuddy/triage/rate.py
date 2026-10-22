@@ -6,7 +6,7 @@ written in one small transaction. Prompts, summaries and model output are never 
 """
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
@@ -19,7 +19,7 @@ from linkedbuddy.enums import PrivacyMode, Rating
 from linkedbuddy.github import ingest
 from linkedbuddy.jobs.context import JobContext
 from linkedbuddy.jobs.handlers import HANDLERS
-from linkedbuddy.jobs.queue import Defer
+from linkedbuddy.jobs.queue import Defer, llm_backoff
 from linkedbuddy.llm.provider import LLMRateLimited, LLMUnavailable
 from linkedbuddy.security.redact import RedactionBlocked
 
@@ -86,7 +86,7 @@ async def rate_event(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]
         await _store(ctx, event_id, rating_reason=REASON_NOT_CONFIGURED)
         return {"skipped": "llm_unavailable"}
     except LLMRateLimited as exc:
-        raise Defer(datetime.now(UTC) + timedelta(seconds=exc.retry_after)) from exc
+        raise Defer(datetime.now(UTC) + llm_backoff(exc.retry_after, ctx.deferrals)) from exc
 
     await _store(
         ctx,

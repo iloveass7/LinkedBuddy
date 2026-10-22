@@ -9,7 +9,7 @@ Prompts, draft bodies and model output are never logged.
 
 import asyncio
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select, update
@@ -46,7 +46,7 @@ from linkedbuddy.github import ingest
 from linkedbuddy.github.client import GitHubRateLimited
 from linkedbuddy.jobs.context import JobContext
 from linkedbuddy.jobs.handlers import HANDLERS
-from linkedbuddy.jobs.queue import Defer, enqueue
+from linkedbuddy.jobs.queue import Defer, enqueue, llm_backoff
 from linkedbuddy.llm.provider import LLMProvider, LLMRateLimited, LLMUnavailable
 from linkedbuddy.security.redact import RedactionBlocked
 from linkedbuddy.settings.service import SettingsOut, get_cached_settings
@@ -202,7 +202,7 @@ async def generate_draft(ctx: JobContext, payload: dict[str, Any]) -> dict[str, 
         return {"skipped": "llm_unavailable"}
     except LLMRateLimited as exc:
         await _restore(ctx, event_id, restore_to)
-        raise Defer(datetime.now(UTC) + timedelta(seconds=exc.retry_after)) from exc
+        raise Defer(datetime.now(UTC) + llm_backoff(exc.retry_after, ctx.deferrals)) from exc
     except GitHubRateLimited as exc:
         await _restore(ctx, event_id, restore_to)
         raise Defer(exc.reset_at) from exc

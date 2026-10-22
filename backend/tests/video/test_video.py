@@ -8,7 +8,8 @@ import sys
 import textwrap
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -542,6 +543,24 @@ async def test_rate_limit_defers_and_keeps_pending(db: AsyncSession, ctx: JobCon
 
     assert info.value.until > datetime.now(UTC)
     assert (await load(db, media_id)).status == "pending"
+
+
+async def test_rate_limit_backs_off_longer_each_deferral(db: AsyncSession, ctx: JobContext) -> None:
+    draft_id, _ = await seed_draft(db)
+    media_id = await seed_video(db, draft_id)
+    waits = []
+    for deferrals in (5, 6):
+        llm = FakeLLM({VideoScript: [LLMRateLimited(1)]})
+        before = datetime.now(UTC)
+        with pytest.raises(Defer) as info:
+            await render_video(
+                replace(with_llm(ctx, llm), deferrals=deferrals), payload(draft_id, media_id)
+            )
+        # The wait chosen at raise time lies between these two bounds.
+        waits.append((info.value.until - datetime.now(UTC), info.value.until - before))
+
+    assert waits[0][0] <= timedelta(seconds=320) <= waits[0][1]
+    assert waits[1][0] <= timedelta(seconds=600) <= waits[1][1]  # capped at 10 min
 
 
 async def test_unexpected_error_marks_failed_and_reraises(

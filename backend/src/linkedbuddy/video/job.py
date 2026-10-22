@@ -8,7 +8,7 @@ Prompts, scripts and model output are never logged.
 """
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +20,7 @@ from linkedbuddy.drafts.prompts import VIDEO_SCRIPT_SYSTEM_PROMPT, video_script_
 from linkedbuddy.enums import MediaStatus, MediaType, PrivacyMode
 from linkedbuddy.jobs.context import RENDER_VIDEO, JobContext
 from linkedbuddy.jobs.handlers import HANDLERS
-from linkedbuddy.jobs.queue import Defer
+from linkedbuddy.jobs.queue import Defer, llm_backoff
 from linkedbuddy.llm.provider import LLMRateLimited, LLMUnavailable
 from linkedbuddy.media.storage import media_path, new_media_name
 from linkedbuddy.settings.service import get_cached_settings
@@ -135,7 +135,7 @@ async def render_video(ctx: JobContext, payload: dict[str, Any]) -> dict[str, An
             await _finish(ctx, media_id, reason=REASON_NOT_CONFIGURED)
             return {"skipped": REASON_NOT_CONFIGURED}
         except LLMRateLimited as exc:
-            raise Defer(datetime.now(UTC) + timedelta(seconds=exc.retry_after)) from exc
+            raise Defer(datetime.now(UTC) + llm_backoff(exc.retry_after, ctx.deferrals)) from exc
 
         async with ctx.sessionmaker() as db:  # fresh: the owner may have changed the tray
             current = await _eligible(db, draft_id)

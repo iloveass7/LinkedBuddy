@@ -3,16 +3,19 @@
 None of these functions commit: the caller's transaction does, so an enqueue is atomic with the
 caller's own writes and a claim's row lock is held only until the caller commits.
 
+`defer` counts deferrals in `jobs.result` (`{"deferrals": n}`) while the job is not done, so a
+handler can back off further each time (`llm_backoff`); `complete` replaces it with the result.
+
 `complete`, `fail` and `defer` take the `attempts` value of the claim they report on and only
 touch a job that is still `running` under that claim. They return False otherwise: the run was
 reclaimed as stale (and maybe claimed again), so its late outcome must not overwrite the newer one.
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, Update, case, func, select, text, update
+from sqlalchemy import CursorResult, Integer, Update, case, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +23,9 @@ from linkedbuddy.db.models import Job
 from linkedbuddy.enums import JobStatus
 
 BACKOFF_BASE_S = 30
+# Gemini 429s (ARCHITECTURE.md 6): exponential from 10 s, at most 10 min.
+LLM_BACKOFF_START_S = 10
+LLM_BACKOFF_MAX_S = 600
 
 _CLAIM = text(
     "UPDATE jobs SET status='running', locked_at=now(), attempts=attempts+1 "
@@ -35,6 +41,20 @@ class Defer(Exception):
     def __init__(self, until: datetime) -> None:
         super().__init__(f"deferred until {until.isoformat()}")
         self.until = until
+
+
+def llm_backoff(retry_after: float, deferrals: int) -> timedelta:
+    """Wait before retrying an LLM 429: 10 s * 2**deferrals capped at 10 min, but never less than
+    the provider's own `retry_after`."""
+    exponent = min(max(deferrals, 0), 16)  # 10 * 2**16 is far past the cap already
+    step = min(LLM_BACKOFF_START_S * 2**exponent, LLM_BACKOFF_MAX_S)
+    return timedelta(seconds=max(retry_after, step))
+
+
+def deferral_count(job: Job) -> int:
+    """How many times `job` was deferred (0 for a fresh or completed job)."""
+    count = (job.result or {}).get("deferrals", 0)
+    return count if isinstance(count, int) else 0
 
 
 async def enqueue(
@@ -122,7 +142,9 @@ async def fail(db: AsyncSession, job_id: uuid.UUID, error: str, *, attempts: int
 
 
 async def defer(db: AsyncSession, job_id: uuid.UUID, until: datetime, *, attempts: int) -> bool:
-    """Re-queue at `until` and give back the attempt the claim took (rate limits, not errors)."""
+    """Re-queue at `until`, give back the attempt the claim took (rate limits, not errors) and
+    count the deferral."""
+    deferrals = func.coalesce(Job.result["deferrals"].as_integer(), 0) + 1
     return await _applied(
         db,
         _of_claim(job_id, attempts).values(
@@ -130,5 +152,6 @@ async def defer(db: AsyncSession, job_id: uuid.UUID, until: datetime, *, attempt
             attempts=func.greatest(Job.attempts - 1, 0),
             run_after=until,
             locked_at=None,
+            result=func.jsonb_build_object("deferrals", deferrals.cast(Integer)),
         ),
     )

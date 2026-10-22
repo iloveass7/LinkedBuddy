@@ -5,7 +5,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from linkedbuddy.config import Settings
 from linkedbuddy.db.models import AuthSession, Draft, Event, Job, Repo
-from linkedbuddy.jobs.queue import claim, complete, defer, enqueue, fail
+from linkedbuddy.jobs.queue import (
+    claim,
+    complete,
+    defer,
+    deferral_count,
+    enqueue,
+    fail,
+    llm_backoff,
+)
 from linkedbuddy.scheduler import tick
 
 KIND = "test_kind"
@@ -83,6 +91,37 @@ async def test_defer_does_not_consume_attempt(committed: async_sessionmaker[Asyn
             until,
             None,
         )
+
+
+def test_llm_backoff_grows_and_caps() -> None:
+    """ARCHITECTURE.md 6: exponential from 10 s, at most 10 min, never sooner than retry_after."""
+    waits = [llm_backoff(0, n).total_seconds() for n in range(8)]
+    assert waits == [10, 20, 40, 80, 160, 320, 600, 600]
+    assert llm_backoff(0, 10_000) == timedelta(minutes=10)
+    assert llm_backoff(42, 0) == timedelta(seconds=42)  # the provider asked for longer
+    assert llm_backoff(3, 1) == timedelta(seconds=20)
+    assert llm_backoff(3600, 9) == timedelta(hours=1)  # a long retry-after is honoured
+
+
+async def test_defer_counts_deferrals(committed: async_sessionmaker[AsyncSession]) -> None:
+    async with committed() as s:
+        job_id = await enqueue(s, KIND, {})
+        await s.commit()
+        seen = []
+        for _ in range(3):
+            job = await claim(s, [KIND])
+            assert job is not None
+            seen.append(deferral_count(job))
+            assert await defer(s, job.id, datetime.now(UTC), attempts=job.attempts)
+            await s.commit()
+        job = await claim(s, [KIND])
+        assert job is not None
+        assert seen == [0, 1, 2]
+        assert deferral_count(job) == 3
+        assert await complete(s, job.id, {"ok": True}, attempts=job.attempts)
+        await s.commit()
+        job = await s.get(Job, job_id, populate_existing=True)
+        assert job is not None and job.result == {"ok": True}
 
 
 async def test_outcome_ignored_after_reclaim(db: AsyncSession) -> None:

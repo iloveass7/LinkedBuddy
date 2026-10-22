@@ -16,12 +16,17 @@ RENDER_VIDEO = "render_video"
 
 @dataclass(frozen=True)
 class JobContext:
-    """Shared per-process resources. Handlers open one short session per DB step."""
+    """Shared per-process resources. Handlers open one short session per DB step.
+
+    `deferrals` is per job: how many times the running job was deferred before (the worker sets
+    it on a copy for each run). Handlers pass it to `queue.llm_backoff`.
+    """
 
     sessionmaker: async_sessionmaker[AsyncSession]
     http: httpx.AsyncClient
     llm: LLMProvider
     settings: Settings
+    deferrals: int = 0
 
 
 Handler = Callable[[JobContext, dict[str, Any]], Awaitable[dict[str, Any]]]

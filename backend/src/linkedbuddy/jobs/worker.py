@@ -7,6 +7,7 @@ Logs carry job ids, kinds, durations and exception types only, never payloads or
 import asyncio
 import logging
 import time
+from dataclasses import replace
 from typing import Any
 
 import asyncpg  # type: ignore[import-untyped]
@@ -19,7 +20,7 @@ from linkedbuddy.db.models import Job
 from linkedbuddy.http import make_http_client
 from linkedbuddy.jobs.context import JobContext
 from linkedbuddy.jobs.handlers import HANDLERS
-from linkedbuddy.jobs.queue import Defer, claim, complete, defer, fail
+from linkedbuddy.jobs.queue import Defer, claim, complete, defer, deferral_count, fail
 from linkedbuddy.llm.gemini import make_llm
 
 log = logging.getLogger(__name__)
@@ -136,7 +137,7 @@ async def _run(ctx: JobContext, job: Job, slots: asyncio.Semaphore) -> None:
         try:
             if handler is None:
                 raise LookupError(f"no handler for job kind {job.kind!r}")
-            result = await handler(ctx, job.payload)
+            result = await handler(replace(ctx, deferrals=deferral_count(job)), job.payload)
             if not isinstance(result, dict):
                 raise TypeError(f"handler result must be a dict, got {type(result).__name__}")
             duration_ms = int((time.monotonic() - started) * 1000)

@@ -3,6 +3,7 @@
 import random
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -220,6 +221,25 @@ async def test_rate_429_defers(ctx: JobContext, db: AsyncSession) -> None:
     event = await stored(db, event_id)
     assert event.rating is None
     assert event.rating_reason is None
+
+
+@respx.mock
+async def test_rate_429_backs_off_longer_each_deferral(ctx: JobContext, db: AsyncSession) -> None:
+    mock_github()
+    event_id = await seed_event(db)
+    waits = []
+    for deferrals in (0, 1):
+        fake = FakeLLM({RatingResult: [LLMRateLimited(1)]})
+        before = datetime.now(UTC)
+        with pytest.raises(Defer) as info:
+            await rate_event(
+                replace(with_llm(ctx, fake), deferrals=deferrals), {"event_id": str(event_id)}
+            )
+        # The wait chosen at raise time lies between these two bounds.
+        waits.append((info.value.until - datetime.now(UTC), info.value.until - before))
+
+    assert waits[0][0] <= timedelta(seconds=10) <= waits[0][1]
+    assert waits[1][0] <= timedelta(seconds=20) <= waits[1][1]
 
 
 @respx.mock

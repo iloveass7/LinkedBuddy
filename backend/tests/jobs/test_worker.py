@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from linkedbuddy.config import Settings
@@ -25,6 +26,10 @@ async def _defer(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     raise Defer(DEFER_UNTIL)
 
 
+async def _deferrals(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
+    return {"seen": ctx.deferrals}
+
+
 async def _boom(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     raise ValueError("nope")
 
@@ -33,7 +38,13 @@ async def _none(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]:
     return None  # type: ignore[return-value]
 
 
-TEST_HANDLERS = {"t_echo": _echo, "t_defer": _defer, "t_boom": _boom, "t_none": _none}
+TEST_HANDLERS = {
+    "t_echo": _echo,
+    "t_defer": _defer,
+    "t_deferrals": _deferrals,
+    "t_boom": _boom,
+    "t_none": _none,
+}
 
 
 # The worker's fallback poll. Every wait below stays well under it, so a job that finishes in
@@ -114,6 +125,20 @@ async def test_worker_handles_defer(
     enqueued = await _enqueue(committed, "t_defer")
     job = await _wait_for(committed, enqueued, lambda j: j.run_after == DEFER_UNTIL)
     assert (job.status, job.attempts, job.error) == ("queued", 0, None)
+    assert job.result == {"deferrals": 1}
+
+
+async def test_worker_passes_deferral_count_to_handler(
+    worker: None, committed: async_sessionmaker[AsyncSession]
+) -> None:
+    started = asyncio.get_running_loop().time()
+    async with committed() as s:  # as if deferred three times before
+        job_id = await enqueue(s, "t_deferrals", {})
+        await s.execute(update(Job).where(Job.id == job_id).values(result={"deferrals": 3}))
+        await s.commit()
+    assert job_id is not None
+    job = await _wait_for(committed, (job_id, started), lambda j: j.status == "done")
+    assert job.result is not None and job.result["seen"] == 3
 
 
 async def test_worker_records_handler_error(

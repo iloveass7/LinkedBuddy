@@ -23,6 +23,7 @@ from linkedbuddy.llm.ratelimit import TokenBucket
 log = logging.getLogger(__name__)
 
 DEFAULT_RETRY_AFTER = 10.0
+_TRANSIENT_SERVER_CODES = frozenset({500, 503, 504})
 _DELAY_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)s\s*$")
 
 
@@ -68,6 +69,13 @@ class GeminiProvider:
         except errors.ClientError as exc:
             if exc.code == 429:
                 raise LLMRateLimited(_retry_after(exc)) from exc
+            raise
+        except errors.ServerError as exc:
+            # Overloaded ("high demand") or a transient outage: back off like a 429 instead of
+            # spending one of the job's attempts.
+            if exc.code in _TRANSIENT_SERVER_CODES:
+                log.warning("llm unavailable model=%s tier=%s code=%s", model, tier, exc.code)
+                raise LLMRateLimited(DEFAULT_RETRY_AFTER) from exc
             raise
         usage = resp.usage_metadata
         # Metadata only: never prompts or outputs (SECURITY.md section 7.1).

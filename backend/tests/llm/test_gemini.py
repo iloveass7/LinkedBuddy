@@ -111,6 +111,21 @@ async def test_gemini_429_defaults_to_10s_without_retry_info() -> None:
     assert ei.value.retry_after == 10.0
 
 
+@pytest.mark.parametrize("code", [500, 503, 504])
+async def test_gemini_overloaded_maps_to_rate_limited(code: int) -> None:
+    # "This model is currently experiencing high demand": wait it out, not a failed attempt.
+    p, _ = _provider(errors.ServerError(code, {"error": {"code": code, "status": "UNAVAILABLE"}}))
+    with pytest.raises(LLMRateLimited) as ei:
+        await _gen(p, "quality")
+    assert ei.value.retry_after == 10.0
+
+
+async def test_gemini_other_server_error_propagates() -> None:
+    p, _ = _provider(errors.ServerError(501, {"error": {"code": 501}}))
+    with pytest.raises(errors.ServerError):
+        await _gen(p)
+
+
 async def test_gemini_non_429_client_error_propagates() -> None:
     p, _ = _provider(errors.ClientError(400, {"error": {"code": 400}}))
     with pytest.raises(errors.ClientError):

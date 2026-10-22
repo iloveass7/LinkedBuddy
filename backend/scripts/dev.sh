@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starts all backend processes for local development: the API (loopback only unless
-# ALLOW_PUBLIC_BIND=true), the general job worker, the video worker and the scheduler.
+# ALLOW_PUBLIC_BIND=true and APP_ENV=prod), the general job worker, the video worker and the scheduler.
 # Ctrl-C stops them all, and so does any one of them exiting (e.g. the bind gate refusing HOST).
 set -euo pipefail
 cd "$(dirname "$0")/.."

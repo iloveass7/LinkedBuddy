@@ -33,7 +33,8 @@ scripts/dev.sh    # API on 127.0.0.1:8000, job workers (general + render_video) 
 
 Ctrl-C stops everything, and so does any one process exiting. The API starts through
 `python -m linkedbuddy.serve`, which refuses a non-loopback host (`HOST=0.0.0.0 scripts/dev.sh`)
-unless `ALLOW_PUBLIC_BIND=true`; only set that with HTTPS in front (SECURITY.md 2.1). Running
+unless `ALLOW_PUBLIC_BIND=true` and `APP_ENV=prod`; only set those with HTTPS in front (SECURITY.md
+2.1). Dev mode never binds publicly: it serves `/docs`, a non-Secure cookie and no HSTS. Running
 `uvicorn` directly skips this check. `PORT` changes the port.
 
 In dev, SQL statements slower than `SLOW_QUERY_MS` (default 100) are logged as `slow query <ms>:

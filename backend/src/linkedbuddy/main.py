@@ -37,7 +37,8 @@ class HealthResponse(BaseModel):
 async def _validation_error(request: Request, exc: Exception) -> JSONResponse:
     """422 without `input` or `ctx`: request bodies carry tokens, passwords and post text, and
     pydantic would echo them back (also under a misnamed key, via `missing`/`extra_forbidden`)."""
-    assert isinstance(exc, RequestValidationError)  # noqa: S101 - registered for this type only
+    if not isinstance(exc, RequestValidationError):  # registered for this type only
+        raise exc
     errors = [{"loc": e["loc"], "msg": e["msg"], "type": e["type"]} for e in exc.errors()]
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": errors}

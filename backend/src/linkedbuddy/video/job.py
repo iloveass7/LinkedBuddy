@@ -179,7 +179,7 @@ async def _mark_failed(ctx: JobContext, media_id: uuid.UUID) -> None:
                 row.status = MediaStatus.failed
                 row.meta = {**row.meta, "reason": REASON_ERROR}
                 await db.commit()
-    except Exception:  # noqa: S110  # nosec B110 - the original error is what the worker records
+    except Exception:  # noqa: S110 - the worker records the original error  # nosec B110
         pass
 
 

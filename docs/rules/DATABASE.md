@@ -13,7 +13,7 @@
 ## 2. Access layer
 
 - **SQLAlchemy 2.0 async + asyncpg.** One `AsyncEngine` is created in the FastAPI lifespan and disposed on shutdown. Never create an engine per request.
-- **Pool:** `pool_size=5`, `max_overflow=5`, `pool_pre_ping=True`, `pool_recycle=1800`. One process for a single user does not need more.
+- **Pool:** a hard per-process cap (`pool_size=<cap>`, `max_overflow=0`), `pool_pre_ping=True`, `pool_recycle=1800`. The Supabase session pooler allows only **15** client connections per project across all processes (`EMAXCONNSESSION` beyond that), so the caps must add up to less: API 4, worker `concurrency + 1` (+1 LISTEN), scheduler 1 — 14 for the `dev.sh` layout. A test checks the sum. A new process or a higher concurrency needs a new budget.
 - **Sessions:** `async_sessionmaker(engine, expire_on_commit=False)`. Request handlers get a session through the `get_session` dependency. Workers open one session per job.
 - **Transactions are short.** Never hold a transaction open across a network call to GitHub, Gemini, LinkedIn, or a subprocess. Read what you need, commit or close, do the slow call, then open a new transaction to write the results.
 - **All ORM models live in `src/linkedbuddy/db/models.py`.** The schema is one unit, and Alembic autogenerate needs every model imported in one place.

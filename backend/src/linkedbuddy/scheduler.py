@@ -18,6 +18,7 @@ from sqlalchemy import (
     Interval,
     Text,
     Update,
+    and_,
     case,
     delete,
     exists,
@@ -43,7 +44,7 @@ STALE_LOCK = timedelta(minutes=10)
 VIDEO_STALE_MARGIN = timedelta(minutes=5)  # on top of video_timeout_s
 DONE_JOB_TTL = timedelta(days=7)
 FAILED_JOB_TTL = timedelta(days=30)
-CONTEXT_TTL = timedelta(days=7)  # after the event's newest draft (SECURITY.md 6.9)
+CONTEXT_TTL = timedelta(days=7)  # after the newest draft, or the build if none (SECURITY.md 6.9)
 
 
 @dataclass
@@ -161,11 +162,17 @@ async def tick(db: AsyncSession, now: datetime, *, settings: Settings | None = N
         .group_by(Draft.event_id)
         .having(func.max(Draft.created_at) < now - CONTEXT_TTL)
     )
+    # An event that was rated but never drafted (its context may hold `full`-mode patch excerpts)
+    # loses its context 7 days after it was built.
+    never_drafted = and_(
+        ~exists().where(Draft.event_id == Event.id),
+        func.coalesce(Event.context_built_at, Event.created_at) < now - CONTEXT_TTL,
+    )
     report.contexts_cleared = await _count(
         db,
         update(Event)
-        .where(Event.context_json.is_not(None), Event.id.in_(stale_events))
-        .values(context_json=None),
+        .where(Event.context_json.is_not(None), or_(Event.id.in_(stale_events), never_drafted))
+        .values(context_json=None, context_hash=None),
     )
     return report
 

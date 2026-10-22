@@ -122,7 +122,7 @@ jobs          id, kind text, payload jsonb, status CHECK(queued|running|done|fai
 
 ## 9. Data retention
 
-- `events.context_json` is set to `NULL` 7 days after the event's newest draft (SECURITY.md 6.9).
+- `events.context_json` is set to `NULL` 7 days after the event's newest draft, or 7 days after it was built for an event that was never drafted (SECURITY.md 6.9).
 - `sessions` past `expires_at` are deleted hourly.
 - `posts`, `drafts`, and `decisions` are kept indefinitely. They are the calibration dataset.
 - Deleting a repo cascades to its commits, events, drafts, and media rows. Media files are removed from disk by the same service call, not by a trigger.

@@ -262,6 +262,36 @@ async def test_scheduler_clears_old_context(db: AsyncSession, settings: Settings
     assert recent.context_json == {"readme": "x"}  # its newest draft is fresh
 
 
+async def test_scheduler_clears_context_of_never_drafted_events(
+    db: AsyncSession, settings: Settings
+) -> None:
+    """A rated-but-never-drafted event must not keep its context (and patches) forever."""
+    now = datetime.now(UTC)
+    repo = await _repo(db, 7, "muted", None)
+    await db.flush()
+    events = {
+        name: Event(
+            repo_id=repo.id,
+            type="manual",
+            dedupe_key=f"ctx:never:{name}",
+            context_json={"readme": "x"},
+            context_hash="h",
+            context_built_at=now - age,
+        )
+        for name, age in [("old", timedelta(days=8)), ("fresh", timedelta(days=6))]
+    }
+    db.add_all(events.values())
+    await db.flush()
+
+    report = await tick(db, now, settings=settings)
+
+    assert report.contexts_cleared >= 1
+    for event in events.values():
+        await db.refresh(event)
+    assert (events["old"].context_json, events["old"].context_hash) == (None, None)
+    assert (events["fresh"].context_json, events["fresh"].context_hash) == ({"readme": "x"}, "h")
+
+
 async def test_scheduler_resets_stuck_generating(db: AsyncSession, settings: Settings) -> None:
     now = datetime.now(UTC)
     repo = await _repo(db, 6, "muted", None)

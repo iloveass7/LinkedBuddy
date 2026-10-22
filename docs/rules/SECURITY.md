@@ -59,7 +59,7 @@
 6. **Redact before sending.** `redact()` runs on every string in the context package before any LLM call. It covers GitHub tokens (`ghp_`, `gho_`, `github_pat_`), AWS keys (`AKIA…`), Google keys (`AIza…`), Slack tokens (`xox[abprs]-`), private key blocks, JWTs, `.env`-style `KEY=value` lines whose key contains `SECRET|TOKEN|PASSWORD|API_KEY`, and email addresses. If redaction fires on a private repo, block the call (`RedactionBlocked`).
 7. **Private repos are never sent to Gemini by default.** The Gemini free tier may use prompts to improve Google's products. So `repos.never_send_to_llm` defaults to `true` when `visibility = 'private'`, and turning it off needs an explicit `PATCH` with `acknowledge_free_tier_data_use: true`.
 8. **`privacy_mode` is enforced in the context builder**, not the prompt: `metadata_only` sends no README and no code, `metadata_plus_readme` sends no diffs, and `never_send` makes no call at all.
-9. **No diffs or code are stored** beyond the `context_json` of an event, which is deleted 7 days after the event's last draft.
+9. **No diffs or code are stored** beyond the `context_json` of an event, which is deleted 7 days after the event's last draft (or 7 days after it was built, if the event was never drafted).
 
 ## 7. Logging and errors
 

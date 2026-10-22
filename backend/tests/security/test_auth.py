@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from httpx import AsyncClient
 from pydantic import SecretStr
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from conftest import OWNER_PASSWORD
@@ -21,6 +21,12 @@ async def login(client: AsyncClient, password: str = OWNER_PASSWORD):  # noqa: A
     return await client.post("/api/auth/login", json={"password": password}, headers=CSRF)
 
 
+async def session_row(db: AsyncSession, token: str) -> AuthSession | None:
+    """This login's row, by token hash: other committed rows in the shared test DB are not ours."""
+    digest = hashlib.sha256(token.encode()).digest()
+    return await db.scalar(select(AuthSession).where(AuthSession.token_hash == digest))
+
+
 async def test_login_sets_cookie(client: AsyncClient, db: AsyncSession) -> None:
     resp = await login(client)
     assert resp.status_code == 204
@@ -30,11 +36,24 @@ async def test_login_sets_cookie(client: AsyncClient, db: AsyncSession) -> None:
     assert "Path=/" in cookie
     assert "Secure" not in cookie  # dev
     token = client.cookies["lb_session"]
-    row = await db.scalar(select(AuthSession))
+    row = await session_row(db, token)
     assert row is not None
     assert row.token_hash == hashlib.sha256(token.encode()).digest()
     assert row.token_hash != token.encode()
     assert timedelta(days=13) < row.expires_at - datetime.now(UTC) <= timedelta(days=14)
+
+
+async def test_session_lookup_ignores_unrelated_rows(client: AsyncClient, db: AsyncSession) -> None:
+    """Regression: a stray committed session (e.g. leaked by another test) must not confuse us."""
+    stray = hashlib.sha256(b"stray-token").digest()
+    db.add(AuthSession(token_hash=stray, expires_at=datetime.now(UTC) + timedelta(days=1)))
+    await db.flush()
+    assert (await login(client)).status_code == 204
+    token = client.cookies["lb_session"]
+    row = await session_row(db, token)
+    assert row is not None
+    assert row.token_hash == hashlib.sha256(token.encode()).digest() != stray
+    assert await db.scalar(select(func.count()).select_from(AuthSession)) >= 2
 
 
 async def test_login_wrong_password_same_error(client: AsyncClient) -> None:
@@ -105,8 +124,10 @@ async def test_csrf_header_required_on_login(plain_client: AsyncClient) -> None:
 
 async def test_logout_deletes_session(client: AsyncClient, db: AsyncSession) -> None:
     await login(client)
+    token = client.cookies["lb_session"]
+    assert await session_row(db, token) is not None
     assert (await client.post("/api/auth/logout", headers=CSRF)).status_code == 204
-    assert await db.scalar(select(AuthSession)) is None
+    assert await session_row(db, token) is None
     assert (await client.get("/api/auth/me")).status_code == 401
 
 

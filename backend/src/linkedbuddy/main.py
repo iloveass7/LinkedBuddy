@@ -14,7 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from linkedbuddy.auth import router as auth_router
 from linkedbuddy.config import Settings, get_settings
-from linkedbuddy.db.engine import engine_for, get_session, make_sessionmaker
+from linkedbuddy.db.engine import (
+    API_DB_CONNECTIONS,
+    engine_for,
+    get_session,
+    make_sessionmaker,
+)
 from linkedbuddy.drafts import router as drafts_router
 from linkedbuddy.http import make_http_client
 from linkedbuddy.inbox import router as inbox_router
@@ -48,7 +53,7 @@ async def _validation_error(request: Request, exc: Exception) -> JSONResponse:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    app.state.engine = engine_for(app.state.settings)
+    app.state.engine = engine_for(app.state.settings, max_connections=API_DB_CONNECTIONS)
     app.state.sessionmaker = make_sessionmaker(app.state.engine)
     app.state.http = make_http_client()
     app.state.llm = make_llm(app.state.settings)

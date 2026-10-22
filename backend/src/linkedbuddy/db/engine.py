@@ -23,14 +23,30 @@ log = logging.getLogger(__name__)
 TRANSACTION_POOLER_PORT = 6543
 SLOW_QUERY_TEXT_CHARS = 80
 
+# Supabase's session pooler serves at most this many client connections per project (free tier
+# default), across every process. Going over fails the connect with EMAXCONNSESSION, so each
+# process gets a fixed share and waits in its own pool instead (DATABASE.md 2).
+SUPABASE_SESSION_POOL_SIZE = 15
+API_DB_CONNECTIONS = 4
+SCHEDULER_DB_CONNECTIONS = 1
+
+
+def worker_db_connections(concurrency: int) -> int:
+    """One connection per job slot, plus one for the claim loop and job outcomes."""
+    return concurrency + 1
+
 
 def reject_transaction_pooler(url: str) -> None:
     if make_url(url).port == TRANSACTION_POOLER_PORT:
         raise ValueError("Port 6543 is the transaction pooler; use the session pooler on 5432")
 
 
-def make_engine(url: str, *, slow_query_ms: int | None = None) -> AsyncEngine:
+def make_engine(
+    url: str, *, max_connections: int = 10, slow_query_ms: int | None = None
+) -> AsyncEngine:
     """Build the process-wide engine. Refuses the Supabase transaction pooler (port 6543).
+
+    The pool never opens more than `max_connections`; extra checkouts wait (up to 30 s).
 
     Statement time always counts towards the current request's `DbTime` (Server-Timing). With
     `slow_query_ms`, statements slower than that are also logged (see `_time_statements`).
@@ -38,8 +54,10 @@ def make_engine(url: str, *, slow_query_ms: int | None = None) -> AsyncEngine:
     reject_transaction_pooler(url)
     engine = create_async_engine(
         url,
-        pool_size=5,
-        max_overflow=5,
+        # Idle connections stay open: a fresh TLS connect to a remote Supabase costs far more
+        # than the query. No overflow, so the cap is hard.
+        pool_size=max_connections,
+        max_overflow=0,
         pool_pre_ping=True,
         pool_recycle=1800,
         # str(DBAPIError) would otherwise embed bound values (README text, post bodies) in
@@ -50,10 +68,10 @@ def make_engine(url: str, *, slow_query_ms: int | None = None) -> AsyncEngine:
     return engine
 
 
-def engine_for(settings: Settings) -> AsyncEngine:
+def engine_for(settings: Settings, *, max_connections: int) -> AsyncEngine:
     """The engine for DATABASE_URL; in dev it logs slow statements (DATABASE.md 7.7)."""
     slow = settings.slow_query_ms if settings.app_env == "dev" else None
-    return make_engine(settings.database_url, slow_query_ms=slow)
+    return make_engine(settings.database_url, max_connections=max_connections, slow_query_ms=slow)
 
 
 class DbTime:

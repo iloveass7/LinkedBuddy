@@ -1,0 +1,304 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource/anton/400.css";
+@import "@fontsource/work-sans/400.css";
+@import "@fontsource/work-sans/500.css";
+@import "@fontsource/work-sans/600.css";
+@import "@fontsource/space-mono/400.css";
+@import "@fontsource/space-mono/700.css";
+
+/*
+ * Design tokens from the Stitch design system "Technical Editorial Kinetic"
+ * (project 6155359455688891497). Components use these tokens only.
+ */
+@theme {
+  /* Canvas */
+  --color-canvas: #f8fafc;
+  --color-cream: #fdfcf7;
+  --color-paper: #ffffff;
+  --color-surface-low: #f2f4f6;
+  --color-surface: #eceef0;
+  --color-surface-high: #e6e8ea;
+
+  /* Ink */
+  --color-ink: #0f172a;
+  --color-midnight: #020617;
+  --color-ink-muted: #64748b;
+  --color-ink-soft: #434655;
+  --color-schematic: #cbd5e1;
+
+  /* Cobalt */
+  --color-cobalt: #1d4ed8;
+  --color-cobalt-vivid: #2563eb;
+  --color-cobalt-deep: #1e40af;
+  --color-cobalt-tint: #dce1ff;
+  --color-cobalt-mist: #eff3ff;
+  --color-sky: #38bdf8;
+
+  /* Status */
+  --color-signal-high: #10b981;
+  --color-signal-medium: #f59e0b;
+  --color-signal-low: #64748b;
+  --color-signal-high-ink: #047857;
+  --color-signal-medium-ink: #b45309;
+  --color-unsupported: #ef4444;
+  --color-danger: #ba1a1a;
+  --color-danger-tint: #ffdad6;
+
+  /* Type families */
+  --font-display: "Anton", "Impact", sans-serif;
+  --font-sans: "Work Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Space Mono", ui-monospace, monospace;
+
+  /* Type scale */
+  --text-hero: 6rem;
+  --text-hero--line-height: 1;
+  --text-hero--letter-spacing: 0.02em;
+  --text-hero-sm: 3.25rem;
+  --text-hero-sm--line-height: 3.375rem;
+  --text-hero-sm--letter-spacing: 0.01em;
+  --text-headline-xl: 4rem;
+  --text-headline-xl--line-height: 4.25rem;
+  --text-headline-xl--letter-spacing: 0.02em;
+  --text-headline-xl-sm: 2.375rem;
+  --text-headline-xl-sm--line-height: 2.625rem;
+  --text-headline-xl-sm--letter-spacing: 0.01em;
+  --text-headline-lg: 2.5rem;
+  --text-headline-lg--line-height: 2.75rem;
+  --text-headline-lg--letter-spacing: 0.03em;
+  --text-headline-md: 1.75rem;
+  --text-headline-md--line-height: 2rem;
+  --text-headline-md--letter-spacing: 0.03em;
+  --text-title: 1.25rem;
+  --text-title--line-height: 1.75rem;
+  --text-body-lg: 1.0625rem;
+  --text-body-lg--line-height: 1.625rem;
+  --text-body: 0.9375rem;
+  --text-body--line-height: 1.375rem;
+  --text-label: 0.75rem;
+  --text-label--line-height: 1rem;
+  --text-label--letter-spacing: 0.08em;
+  --text-badge: 0.6875rem;
+  --text-badge--line-height: 0.875rem;
+  --text-badge--letter-spacing: 0.05em;
+  --text-code: 0.8125rem;
+  --text-code--line-height: 1.25rem;
+
+  /* Layout */
+  --spacing-gutter: 1.5rem;
+  --spacing-gutter-sm: 0.75rem;
+  --spacing-margin: 3rem;
+  --spacing-margin-sm: 1rem;
+
+  /* Elevation: hard offsets only, never blurred */
+  --shadow-hard: 4px 4px 0 0 var(--color-ink);
+  --shadow-hard-sm: 2px 2px 0 0 var(--color-ink);
+  --shadow-hard-cobalt: 4px 4px 0 0 var(--color-cobalt);
+  --shadow-hard-lift: 8px 8px 0 0 var(--color-cobalt);
+  /* Landing-page glass (Stitch "Kinetic Studio" screen): soft cobalt lift under frosted panels */
+  --shadow-glass: 0 20px 50px color-mix(in srgb, var(--color-cobalt) 22%, transparent);
+  --shadow-glass-sm: 0 10px 28px color-mix(in srgb, var(--color-cobalt) 16%, transparent);
+  --radius-glass: 0.5rem;
+
+  /* Motion */
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-carousel: cubic-bezier(0.2, 0.9, 0.25, 1);
+
+  --animate-flow-dash: flow-dash 2s linear infinite;
+  --animate-breathe: breathe 2.2s ease-in-out infinite;
+  --animate-ping-soft: ping-soft 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+  --animate-blink: blink 0.9s steps(1) infinite;
+  --animate-ripple: ripple 0.6s linear forwards;
+
+  @keyframes flow-dash {
+    to {
+      stroke-dashoffset: -40;
+    }
+  }
+  @keyframes breathe {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.55;
+      transform: scale(0.85);
+    }
+  }
+  @keyframes ping-soft {
+    0% {
+      transform: scale(0.95);
+      opacity: 0.9;
+    }
+    50% {
+      transform: scale(1.4);
+      opacity: 0.3;
+    }
+    100% {
+      transform: scale(0.95);
+      opacity: 0.9;
+    }
+  }
+  @keyframes ripple {
+    from {
+      transform: scale(0);
+      opacity: 1;
+    }
+    to {
+      transform: scale(4);
+      opacity: 0;
+    }
+  }
+  @keyframes blink {
+    0%,
+    49% {
+      opacity: 1;
+    }
+    50%,
+    100% {
+      opacity: 0;
+    }
+  }
+}
+
+/* shadcn semantic tokens, mapped onto the Stitch palette (light only: the design has no dark mode). */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+}
+
+:root {
+  --background: var(--color-canvas);
+  --foreground: var(--color-ink);
+  --card: var(--color-paper);
+  --card-foreground: var(--color-ink);
+  --popover: var(--color-paper);
+  --popover-foreground: var(--color-ink);
+  --primary: var(--color-cobalt);
+  --primary-foreground: var(--color-paper);
+  --secondary: var(--color-surface-low);
+  --secondary-foreground: var(--color-ink);
+  --muted: var(--color-surface-low);
+  --muted-foreground: var(--color-ink-muted);
+  --accent: var(--color-cobalt-tint);
+  --accent-foreground: var(--color-cobalt-deep);
+  --destructive: var(--color-danger);
+  --border: var(--color-schematic);
+  --input: var(--color-schematic);
+  --ring: var(--color-cobalt);
+  --radius: 0;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    @apply bg-canvas font-sans text-ink antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply min-h-dvh bg-canvas;
+  }
+  ::selection {
+    @apply bg-cobalt text-paper;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-cobalt-vivid);
+    outline-offset: 2px;
+  }
+  /* Lenis takes over scrolling; native smooth scroll would fight it. */
+  html.lenis,
+  html.lenis body {
+    height: auto;
+  }
+  .lenis.lenis-smooth {
+    scroll-behavior: auto !important;
+  }
+  .lenis.lenis-stopped {
+    overflow: clip;
+  }
+}
+
+@layer components {
+  /* Anton is uppercase-only by design rule */
+  .font-display {
+    text-transform: uppercase;
+  }
+  .label-technical {
+    @apply font-mono text-label font-bold uppercase;
+  }
+  .label-badge {
+    @apply font-mono text-badge uppercase;
+  }
+}
+
+@utility bg-blueprint {
+  background-color: var(--color-canvas);
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--color-cobalt) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--color-cobalt) 7%, transparent) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+@utility bg-dot-paper {
+  background-color: var(--color-canvas);
+  background-image: radial-gradient(color-mix(in srgb, var(--color-cobalt) 6%, transparent) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+@utility writing-vertical {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+@utility clip-slash-top {
+  clip-path: polygon(0 14vw, 100% 0, 100% 100%, 0 100%);
+  @media (width >= 64rem) {
+    clip-path: polygon(0 120px, 100% 0, 100% 100%, 0 100%);
+  }
+}
+
+@utility perspective-stage {
+  perspective: 1200px;
+  transform-style: preserve-3d;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}

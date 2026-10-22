@@ -13,6 +13,7 @@ Each file ends with a PR checklist. Run through it before you call work done.
 ## Current decisions
 
 - Backend: **FastAPI** (Python 3.12, uv). Code lives in `backend/`.
+- Frontend: **Vite + React + TypeScript + Tailwind** in `frontend/`. Read `frontend/CLAUDE.md` before any frontend work; its rules are binding.
 - **Personal use, single owner. No paid services or tiers.** Ignore the spec's pricing, multi-user, and paid-tier material.
 - AI: **Gemini API free tier** (`google-genai`). Video: **brag** behind the `VideoRenderer` adapter, opt-in only.
 - Publishing: copy-and-paste for now. LinkedIn API publishing comes in a later plan.

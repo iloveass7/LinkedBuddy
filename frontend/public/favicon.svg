@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <circle cx="50" cy="50" r="44" stroke="#1D4ED8" stroke-width="2" stroke-dasharray="4 2" opacity="0.4"/>
+  <circle cx="28" cy="50" r="6" fill="#1D4ED8"/>
+  <circle cx="50" cy="30" r="6" fill="#1D4ED8"/>
+  <circle cx="72" cy="50" r="7" fill="#2563EB" stroke="#1D4ED8" stroke-width="2"/>
+  <circle cx="50" cy="70" r="5" fill="#1D4ED8" opacity="0.6"/>
+  <!-- Connecting circuit / git graph commit arcs -->
+  <path d="M28 50 C38 50, 40 30, 50 30 C60 30, 62 50, 72 50" stroke="#1D4ED8" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M28 50 C38 50, 40 70, 50 70 C60 70, 62 50, 72 50" stroke="#1D4ED8" stroke-width="2" stroke-linecap="round" stroke-dasharray="3 3"/>
+  <!-- Central signal pulse -->
+  <line x1="28" y1="50" x2="72" y2="50" stroke="#1D4ED8" stroke-width="1.5" opacity="0.3"/>
+  <circle cx="72" cy="50" r="14" stroke="#2563EB" stroke-width="1" stroke-dasharray="2 3" opacity="0.7"/>
+</svg>

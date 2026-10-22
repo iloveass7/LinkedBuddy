@@ -243,6 +243,25 @@ async def test_rate_429_backs_off_longer_each_deferral(ctx: JobContext, db: Asyn
 
 
 @respx.mock
+async def test_rate_github_rate_limit_defers(ctx: JobContext, db: AsyncSession) -> None:
+    """A GitHub rate limit while building the context re-queues the rating; it is not lost."""
+    low = {"x-ratelimit-remaining": "5", "x-ratelimit-reset": "1900000000"}
+    respx.get(f"{API}/repos/{REPO}/readme").respond(200, text="# Reranker", headers=low)
+    respx.get(f"{API}/repos/{REPO}/releases").respond(200, json=[], headers=OK)
+    respx.get(f"{API}/repos/{REPO}/git/trees/{HEAD}").respond(200, json={"tree": []}, headers=OK)
+    event_id = await seed_event(db)
+    fake = FakeLLM({})
+
+    with pytest.raises(Defer) as info:
+        await rate_event(with_llm(ctx, fake), {"event_id": str(event_id)})
+
+    assert info.value.until == datetime.fromtimestamp(1900000000, UTC)
+    assert fake.calls == []
+    event = await stored(db, event_id)
+    assert (event.rating, event.rating_reason) == (None, None)
+
+
+@respx.mock
 async def test_rate_idempotent(ctx: JobContext, db: AsyncSession) -> None:
     routes = mock_github()
     event_id = await seed_event(db)

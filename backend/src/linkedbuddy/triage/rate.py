@@ -17,6 +17,7 @@ from linkedbuddy.drafts.context import build_context, build_rating_summary
 from linkedbuddy.drafts.prompts import rating_system_prompt
 from linkedbuddy.enums import PrivacyMode, Rating
 from linkedbuddy.github import ingest
+from linkedbuddy.github.client import GitHubRateLimited
 from linkedbuddy.jobs.context import JobContext
 from linkedbuddy.jobs.handlers import HANDLERS
 from linkedbuddy.jobs.queue import Defer, llm_backoff
@@ -87,6 +88,8 @@ async def rate_event(ctx: JobContext, payload: dict[str, Any]) -> dict[str, Any]
         return {"skipped": "llm_unavailable"}
     except LLMRateLimited as exc:
         raise Defer(datetime.now(UTC) + llm_backoff(exc.retry_after, ctx.deferrals)) from exc
+    except GitHubRateLimited as exc:
+        raise Defer(exc.reset_at) from exc
 
     await _store(
         ctx,

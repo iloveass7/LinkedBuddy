@@ -433,7 +433,7 @@ def test_render_strips_unterminated_delimiter_tags() -> None:
 
 
 def test_context_version_bumped() -> None:
-    assert CONTEXT_VERSION == "2"
+    assert CONTEXT_VERSION == "3"
 
 
 def test_tree_paths_cannot_forge_evidence_lines() -> None:
@@ -570,3 +570,162 @@ def test_patch_text_never_dumped() -> None:
     f = GhFile(filename="a.py", patch="+secret code")
     assert f.patch == "+secret code"
     assert "patch" not in f.model_dump()
+
+
+# --- manual events: the owner's base..head range ----------------------------------------------
+
+
+async def seed_manual(
+    db: AsyncSession, *, base_sha: str | None, stored: dict[str, str] | None = None
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """A manual event (no linked commits) plus `stored` {sha: message} rows of other polls."""
+    repo = Repo(
+        github_repo_id=uuid.uuid4().int % 10**12,
+        full_name=REPO,
+        visibility="public",
+        mode="always_suggest",
+        default_branch="main",
+    )
+    db.add(repo)
+    await db.flush()
+    event_id = await db.scalar(
+        insert(Event)
+        .values(
+            repo_id=repo.id,
+            type="manual",
+            dedupe_key=f"manual:{uuid.uuid4()}",
+            base_sha=base_sha,
+            head_sha=HEAD,
+        )
+        .returning(Event.id)
+    )
+    assert event_id is not None
+    for n, (commit_sha, message) in enumerate((stored or {}).items()):
+        db.add(
+            Commit(
+                repo_id=repo.id,
+                sha=commit_sha,
+                classification="feature",
+                message=message,
+                files=[{"filename": "src/stored.py", "status": "added"}],
+                committed_at=T0 + timedelta(minutes=n),
+            )
+        )
+    await db.commit()
+    return repo.id, event_id
+
+
+def mock_range_details(routes: dict[str, respx.Route], messages: dict[str, str]) -> None:
+    def detail(request: httpx.Request) -> httpx.Response:
+        commit_sha = request.url.path.rsplit("/", 1)[1]
+        body = {
+            "sha": commit_sha,
+            "parents": [],
+            "commit": {
+                "message": messages[commit_sha],
+                "committer": {"date": "2026-01-02T00:00:00Z"},
+            },
+            "files": [
+                {"filename": f"src/f{i}.py", "additions": 1, "deletions": 0, "patch": "+x"}
+                for i in range(305)
+            ],
+        }
+        return httpx.Response(200, json=body, headers=OK)
+
+    routes["detail"].side_effect = detail
+
+
+def commit_text(pkg: ContextPackage, commit_sha: str) -> str:
+    return next(e.text for e in pkg.evidence if e.id == f"commit:{commit_sha[:7]}")
+
+
+@respx.mock
+async def test_manual_event_range_gets_commit_evidence(db: AsyncSession, gh: GitHubClient) -> None:
+    repo_id, event_id = await seed_manual(
+        db, base_sha=BASE_SHA, stored={sha(1): "feat: stored by a poll"}
+    )
+    routes = mock_github()
+    compare = respx.get(f"{API}/repos/{REPO}/compare/{BASE_SHA}...{HEAD}").respond(
+        200, json={"commits": [{"sha": sha(1)}, {"sha": sha(2)}, {"sha": HEAD}]}, headers=OK
+    )
+    mock_range_details(
+        routes, {sha(2): f"feat: fetched one\n\ntoken {GH_TOKEN}", HEAD: "feat: the head"}
+    )
+
+    pkg = await build_context(db, gh, event_id, PrivacyMode.metadata_plus_readme)
+
+    assert compare.call_count == 1
+    commit_ids = [e.id for e in pkg.evidence if e.kind == "commit"]
+    assert commit_ids == [f"commit:{s[:7]}" for s in (sha(1), sha(2), HEAD)]  # oldest first
+    assert commit_text(pkg, sha(1)).startswith("feat: stored by a poll\nfiles: src/stored.py")
+    fetched = commit_text(pkg, sha(2))
+    assert fetched.startswith("feat: fetched one")
+    assert GH_TOKEN not in fetched and "[REDACTED:github_token]" in fetched  # redacted
+    assert "(+280 more)" in fetched  # 300 files kept, 20 listed
+    assert commit_text(pkg, HEAD).startswith("feat: the head")
+    # The stored commit is read from the DB, not fetched, and nothing is written to `commits`.
+    fetched_shas = {c.request.url.path.rsplit("/", 1)[1] for c in routes["detail"].calls}
+    assert fetched_shas == {sha(2), HEAD}
+    rows = await db.scalars(select(Commit.sha).where(Commit.repo_id == repo_id))
+    assert set(rows) == {sha(1)}
+
+
+@respx.mock
+async def test_manual_event_full_mode_fetches_each_commit_once(
+    db: AsyncSession, gh: GitHubClient
+) -> None:
+    _, event_id = await seed_manual(db, base_sha=BASE_SHA, stored={sha(1): "feat: stored"})
+    routes = mock_github()
+    respx.get(f"{API}/repos/{REPO}/compare/{BASE_SHA}...{HEAD}").respond(
+        200, json={"commits": [{"sha": sha(1)}, {"sha": HEAD}]}, headers=OK
+    )
+    mock_range_details(routes, {sha(1): "feat: stored", HEAD: "feat: the head"})
+
+    pkg = await build_context(db, gh, event_id, PrivacyMode.full)
+
+    fetched = [c.request.url.path.rsplit("/", 1)[1] for c in routes["detail"].calls]
+    assert sorted(fetched) == sorted([sha(1), HEAD])  # the head's detail is reused for patches
+    assert "file" in kinds(pkg)
+
+
+@respx.mock
+async def test_manual_event_without_base_uses_head_only(db: AsyncSession, gh: GitHubClient) -> None:
+    _, event_id = await seed_manual(db, base_sha=None)
+    routes = mock_github()
+    compare = respx.get(url__regex=rf"^{API}/repos/{REPO}/compare/.*").respond(500)
+    mock_range_details(routes, {HEAD: "feat: the head"})
+
+    pkg = await build_context(db, gh, event_id, PrivacyMode.metadata_plus_readme)
+
+    assert compare.call_count == 0
+    assert [e.id for e in pkg.evidence if e.kind == "commit"] == [f"commit:{HEAD[:7]}"]
+
+
+@respx.mock
+async def test_manual_event_unknown_base_falls_back_to_head(
+    db: AsyncSession, gh: GitHubClient
+) -> None:
+    _, event_id = await seed_manual(db, base_sha=BASE_SHA)
+    routes = mock_github()
+    respx.get(f"{API}/repos/{REPO}/compare/{BASE_SHA}...{HEAD}").respond(404, headers=OK)
+    mock_range_details(routes, {HEAD: "feat: the head"})
+
+    pkg = await build_context(db, gh, event_id, PrivacyMode.metadata_plus_readme)
+
+    assert [e.id for e in pkg.evidence if e.kind == "commit"] == [f"commit:{HEAD[:7]}"]
+
+
+@respx.mock
+async def test_manual_event_range_capped_at_100_newest(db: AsyncSession, gh: GitHubClient) -> None:
+    _, event_id = await seed_manual(db, base_sha=BASE_SHA)
+    routes = mock_github()
+    shas = [sha(i) for i in range(120)]
+    respx.get(f"{API}/repos/{REPO}/compare/{BASE_SHA}...{HEAD}").respond(
+        200, json={"commits": [{"sha": s} for s in shas]}, headers=OK
+    )
+    mock_range_details(routes, {s: f"feat: {i}" for i, s in enumerate(shas)})
+
+    await build_context(db, gh, event_id, PrivacyMode.metadata_plus_readme, budget=200_000)
+
+    fetched = {c.request.url.path.rsplit("/", 1)[1] for c in routes["detail"].calls}
+    assert fetched == set(shas[-100:])

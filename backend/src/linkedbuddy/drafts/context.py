@@ -7,7 +7,8 @@ budget and cached on the event (ARCHITECTURE.md 6, Gemini).
 
 Commit messages and file lists come from the DB (ingestion stored them). GitHub is asked only for
 what the DB lacks: the README at head, releases, the tree at head and, in ``full`` mode, patches.
-Never log evidence text.
+A manual event links no commits: its base..head range is resolved with ``compare`` and any commit
+of the range that no poll stored is fetched (never written to ``commits``). Never log evidence text.
 """
 
 import asyncio
@@ -16,7 +17,8 @@ import json
 import re
 import unicodedata
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import httpx
@@ -25,11 +27,11 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from linkedbuddy.db.models import Commit, Draft, Event, Post, Repo
-from linkedbuddy.enums import PrivacyMode, RepoVisibility
+from linkedbuddy.enums import EventType, PrivacyMode, RepoVisibility
 from linkedbuddy.github.client import GhCommit, GhRelease, GitHubClient
 from linkedbuddy.security.redact import RedactionBlocked, redact
 
-CONTEXT_VERSION = "2"  # bump whenever the builder's output changes: it invalidates every cache
+CONTEXT_VERSION = "3"  # bump whenever the builder's output changes: it invalidates every cache
 CONTEXT_CHAR_BUDGET = 24_000
 RATING_SUMMARY_LIMIT = 4_000
 
@@ -48,6 +50,11 @@ MAX_RELEASES = 5
 MAX_RELEASE_CHARS = 800
 MAX_PREV_POST_CHARS = 3_000
 MAX_STATS_CHARS = 500
+# A manual event's range, like a poll (ARCHITECTURE.md 6): the newest 100 commits, details 8 at a
+# time, at most 300 files each.
+MAX_RANGE_COMMITS = 100
+RANGE_DETAIL_CONCURRENCY = 8
+MAX_FILES_PER_COMMIT = 300
 
 # Rating summary sections (chars of rendered entries).
 SUMMARY_GOALS_CHARS = 600
@@ -180,6 +187,82 @@ def _commit_evidence(rows: Sequence[Any], clean: _Redactor) -> list[Evidence]:
     return out
 
 
+@dataclass(frozen=True, slots=True)
+class _CommitRow:
+    """A fetched commit in the shape of a stored `commits` row (files without patches)."""
+
+    sha: str
+    message: str
+    files: list[dict[str, Any]]
+
+
+def _as_row(commit: GhCommit) -> _CommitRow:
+    files = [f.model_dump() for f in commit.files[:MAX_FILES_PER_COMMIT]]
+    return _CommitRow(sha=commit.sha, message=commit.message, files=files)
+
+
+async def _commit_or_none(gh: GitHubClient, full_name: str, sha: str) -> GhCommit | None:
+    try:
+        return await gh.get_commit(full_name, sha)
+    except httpx.HTTPStatusError as exc:  # commit gone (force-push): no evidence, no failure
+        if exc.response.status_code in (404, 422):
+            return None
+        raise
+
+
+async def _range_shas(
+    gh: GitHubClient, full_name: str, base_sha: str | None, head_sha: str
+) -> list[str]:
+    """A manual event's commits, oldest first: base..head, or just head without a usable base."""
+    if base_sha:
+        between = await gh.compare(full_name, base_sha, head_sha)
+        if between:
+            return between[-MAX_RANGE_COMMITS:]
+    return [head_sha]
+
+
+async def _range_commits(
+    db: AsyncSession,
+    gh: GitHubClient,
+    repo_id: uuid.UUID,
+    full_name: str,
+    base_sha: str | None,
+    head_sha: str,
+) -> tuple[list[Any], dict[str, GhCommit]]:
+    """(commit rows oldest first, details fetched on the way). Stored rows are used when present.
+
+    Holds no transaction across the GitHub calls.
+    """
+    shas = await _range_shas(gh, full_name, base_sha, head_sha)
+    stored = {
+        r.sha: r
+        for r in (
+            await db.execute(
+                select(Commit.sha, Commit.message, Commit.files).where(
+                    Commit.repo_id == repo_id, Commit.sha.in_(shas)
+                )
+            )
+        ).all()
+    }
+    await db.commit()
+    gate = asyncio.Semaphore(RANGE_DETAIL_CONCURRENCY)
+
+    async def one(sha: str) -> GhCommit | None:
+        async with gate:
+            return await _commit_or_none(gh, full_name, sha)
+
+    missing = [s for s in shas if s not in stored]
+    tasks = [asyncio.ensure_future(one(s)) for s in missing]
+    try:
+        details = await asyncio.gather(*tasks)
+    finally:  # the first error (e.g. a rate limit) cancels the rest
+        for task in tasks:
+            task.cancel()
+    fetched = {s: c for s, c in zip(missing, details, strict=True) if c}
+    rows = [stored.get(s) or (_as_row(fetched[s]) if s in fetched else None) for s in shas]
+    return [r for r in rows if r is not None], fetched
+
+
 def _release_evidence(
     releases: Sequence[GhRelease], event_tag: str | None, clean: _Redactor
 ) -> list[Evidence]:
@@ -279,6 +362,7 @@ async def _fetch(
     head_sha: str | None,
     privacy_mode: PrivacyMode,
     commit_shas: Sequence[str],
+    known: Mapping[str, GhCommit],
 ) -> tuple[str | None, list[GhRelease], list[str], list[GhCommit | None]]:
     async def readme() -> str | None:
         if privacy_mode == PrivacyMode.metadata_only:
@@ -289,12 +373,9 @@ async def _fetch(
         return await gh.get_tree(full_name, head_sha) if head_sha else []
 
     async def one_commit(sha: str) -> GhCommit | None:
-        try:
-            return await gh.get_commit(full_name, sha)
-        except httpx.HTTPStatusError as exc:  # commit gone (force-push): no patch, no failure
-            if exc.response.status_code in (404, 422):
-                return None
-            raise
+        if sha in known:  # already fetched for a manual range
+            return known[sha]
+        return await _commit_or_none(gh, full_name, sha)
 
     async def patches() -> list[GhCommit | None]:
         if privacy_mode != PrivacyMode.full:
@@ -319,6 +400,7 @@ async def build_context(
         await db.execute(
             select(
                 Event.type,
+                Event.base_sha,
                 Event.head_sha,
                 Event.stats,
                 Event.context_hash,
@@ -341,7 +423,7 @@ async def build_context(
     if row.context_hash == wanted_hash and row.context_json:
         return ContextPackage.model_validate(row.context_json)
 
-    commits = (
+    commits: Sequence[Any] = (
         await db.execute(
             select(Commit.sha, Commit.message, Commit.files)
             .where(Commit.event_id == event_id)
@@ -358,8 +440,13 @@ async def build_context(
     )
     await db.commit()  # no transaction stays open across the GitHub calls (DATABASE.md 2)
 
+    fetched: dict[str, GhCommit] = {}
+    if row.type == EventType.manual and row.head_sha:
+        commits, fetched = await _range_commits(
+            db, gh, row.repo_id, row.full_name, row.base_sha, row.head_sha
+        )
     readme, releases, tree, patch_commits = await _fetch(
-        gh, row.full_name, row.head_sha, privacy_mode, [c.sha for c in commits]
+        gh, row.full_name, row.head_sha, privacy_mode, [c.sha for c in commits], fetched
     )
 
     clean = _Redactor()
